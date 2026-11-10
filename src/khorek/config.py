@@ -79,10 +79,11 @@ class ExplorerAgentConfig(_StrictModel):
 
 
 class FixerAgentConfig(_StrictModel):
-    """Fixer settings (consumed by Phase 3)."""
+    """Fixer settings (max rounds per issue and tool budget per round)."""
 
     prompt: str = ""
     max_attempts: int = Field(default=DEFAULT_MAX_ATTEMPTS, gt=0)
+    max_tool_calls: int = Field(default=DEFAULT_MAX_TOOL_CALLS, gt=0)
 
 
 class VerifierAgentConfig(_StrictModel):

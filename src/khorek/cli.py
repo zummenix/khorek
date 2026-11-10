@@ -16,6 +16,7 @@ from khorek.llm import LLMClient, ModelUnavailable
 from khorek.lock import LockError, LockHeld, acquire
 from khorek.report import Reporter
 from khorek.workflows.explore import run_explore
+from khorek.workflows.fix import run_fix
 
 # Exit codes are fixed by the prototype plan.
 EXIT_OK = 0
@@ -193,6 +194,65 @@ def _run_explore(args: argparse.Namespace, transport: httpx.BaseTransport | None
         llm.close()
 
 
+def _run_fix(args: argparse.Namespace, transport: httpx.BaseTransport | None) -> int:
+    project_root = _resolve_project(args.path)
+    if project_root is None:
+        return EXIT_FATAL
+
+    config = _load_config_or_report(project_root, args)
+    if config is None:
+        return EXIT_FATAL
+    if not config.verify:
+        print(
+            "khorek: fix requires at least one [[verify]] command in the config",
+            file=sys.stderr,
+        )
+        return EXIT_FATAL
+
+    llm = LLMClient(
+        config.llm,
+        transport=transport,
+        max_prompt_bytes=config.defaults.max_prompt_bytes,
+        max_tool_output_bytes=config.defaults.max_tool_output_bytes,
+    )
+    try:
+        try:
+            llm.preflight()
+        except ModelUnavailable as exc:
+            return _fail(str(exc))
+
+        db_path = _resolve_db_path(project_root, args.db)
+        try:
+            with acquire(db_path):
+                try:
+                    with Database(db_path, project_root) as database:
+                        reporter = Reporter()
+                        pruned = database.prune_drift([aspect.id for aspect in config.aspects])
+                        if pruned:
+                            reporter.message(
+                                f"fix: pruned {pruned} issue/state row(s) "
+                                "from aspects no longer in the config"
+                            )
+                        app = AppContext(
+                            project_root=project_root,
+                            config=config,
+                            database=database,
+                            llm=llm,
+                            reporter=reporter,
+                        )
+                        stats = run_fix(app, limit=args.limit)
+                        remaining = database.count_issues()
+                        return EXIT_ERROR if stats.failed or remaining else EXIT_OK
+                except DatabaseError as exc:
+                    return _fail(str(exc))
+        except LockHeld as exc:
+            return _fail(str(exc))
+        except LockError as exc:
+            return _fail(str(exc))
+    finally:
+        llm.close()
+
+
 def _run_reset(args: argparse.Namespace) -> int:
     project_root = _resolve_project(args.path)
     if project_root is None:
@@ -245,6 +305,8 @@ def main(
 
     if args.command == "explore":
         return _run_explore(args, transport)
+    if args.command == "fix":
+        return _run_fix(args, transport)
     if args.command == "reset":
         return _run_reset(args)
 

@@ -27,6 +27,16 @@ class ExploreStats:
         return "clean"
 
 
+@dataclass
+class FixStats:
+    """Counters for one fix run."""
+
+    attempted: int = 0
+    fixed: int = 0
+    failed: int = 0
+    skipped_stale: int = 0
+
+
 class Reporter:
     """Minimal deterministic stdout reporter (no logging, no timestamps)."""
 
@@ -57,5 +67,29 @@ class Reporter:
             f"outcome: {stats.outcome}"
         )
 
+    # -- fix -----------------------------------------------------------
 
-__all__ = ["ExploreStats", "Reporter"]
+    def fix_attempted(self, issue_id: int, aspect_id: str, path: str, severity: str) -> None:
+        self.message(f"fix #{issue_id} {aspect_id} {path}: attempting (severity {severity})")
+
+    def fix_finished(self, issue_id: int, aspect_id: str, path: str) -> None:
+        self.message(f"fix #{issue_id} {aspect_id} {path}: fixed")
+
+    def fix_failed(self, issue_id: int, aspect_id: str, path: str, error: str) -> None:
+        self.message(f"fix #{issue_id} {aspect_id} {path}: failed: {error}")
+
+    def fix_skipped_stale(self, issue_id: int, aspect_id: str, path: str) -> None:
+        self.message(f"fix #{issue_id} {aspect_id} {path}: skipped (stale hash)")
+
+    def fix_summary(self, stats: FixStats, *, remaining: int) -> None:
+        self.message(
+            "fix summary: "
+            f"{stats.attempted} attempted, "
+            f"{stats.fixed} fixed, "
+            f"{stats.failed} failed, "
+            f"{stats.skipped_stale} skipped-stale, "
+            f"{remaining} open issues"
+        )
+
+
+__all__ = ["ExploreStats", "FixStats", "Reporter"]

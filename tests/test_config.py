@@ -194,3 +194,18 @@ def test_env_temperature_out_of_range_raises(project, monkeypatch) -> None:
     monkeypatch.setenv("KHOREK_LLM_TEMPERATURE", "9")
     with pytest.raises(ConfigError, match="temperature"):
         load_config(project.root)
+
+
+def test_fixer_defaults_and_overrides(tmp_path: Path) -> None:
+    project = make_project(tmp_path / "project")
+    config = load_config(project.root)
+    assert config.agents.fixer.max_attempts == 3
+    assert config.agents.fixer.max_tool_calls == 20
+
+    write_config(
+        project.root,
+        agents={"fixer": {"max_attempts": 2, "max_tool_calls": 5}},
+    )
+    config = load_config(project.root)
+    assert config.agents.fixer.max_attempts == 2
+    assert config.agents.fixer.max_tool_calls == 5

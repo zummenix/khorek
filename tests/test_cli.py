@@ -13,6 +13,7 @@ from khorek.lock import lock_path_for
 from tests.conftest import (
     FakeModel,
     explore_args,
+    fix_args,
     held_lock,
     make_project,
     run_cli,
@@ -38,10 +39,20 @@ def test_help_exits_zero() -> None:
     assert exc_info.value.code == 0
 
 
-@pytest.mark.parametrize("command", ["fix", "explore-and-fix"])
-def test_later_phase_commands_stay_unimplemented(command: str, capsys) -> None:
-    assert main([command]) == 2
+def test_explore_and_fix_stays_unimplemented(capsys) -> None:
+    assert main(["explore-and-fix"]) == 2
     assert "not implemented yet" in capsys.readouterr().err
+
+
+def test_fix_requires_a_verify_command(tmp_path: Path, capsys) -> None:
+    project = make_project(tmp_path / "project")
+    fake = FakeModel([])
+
+    assert run_cli(fake, *fix_args(project)) == 2
+
+    assert fake.model_requests == 0
+    assert not project.db_path.exists()
+    assert "[[verify]]" in capsys.readouterr().err
 
 
 def test_negative_limit_is_fatal_before_any_work() -> None:

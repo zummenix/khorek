@@ -9,6 +9,7 @@ so tests can assert call counts and inspect tool results.
 from __future__ import annotations
 
 import json
+import shlex
 import subprocess
 import sys
 from collections.abc import Callable, Generator, Sequence
@@ -21,6 +22,8 @@ import httpx
 import pytest
 
 from khorek.cli import main
+from khorek.db import Database
+from khorek.files import sha256_file
 
 Message = dict[str, Any]
 ScriptItem = Message | Callable[[dict[str, Any]], Message]
@@ -46,7 +49,7 @@ DEFAULT_DEFAULTS: dict[str, Any] = {
 DEFAULT_AGENTS: dict[str, dict[str, Any]] = {
     "aspect": {"prompt": "", "max_handoffs": 3, "max_tool_calls": 20},
     "explorer": {"prompt": "", "max_tool_calls": 20},
-    "fixer": {"prompt": "", "max_attempts": 3},
+    "fixer": {"prompt": "", "max_attempts": 3, "max_tool_calls": 20},
     "verifier": {"prompt": ""},
 }
 
@@ -265,6 +268,82 @@ def explore_args(project: Project, *extra: str | Path) -> tuple[str | Path, ...]
         project.db_path,
         *extra,
     )
+
+
+def fix_args(project: Project, *extra: str | Path) -> tuple[str | Path, ...]:
+    """Standard ``fix`` arguments for a tmp project."""
+    return (
+        "fix",
+        "-p",
+        project.root,
+        "--db",
+        project.db_path,
+        *extra,
+    )
+
+
+def seed_issue(
+    project: Project,
+    *,
+    aspect_id: str = "comments",
+    path: str = "src/a.py",
+    description: str = "the comment is inconsistent",
+    line_start: int = 1,
+    line_end: int = 1,
+    severity: str = "high",
+    retry_count: int = 0,
+    sha256: str | None = None,
+) -> int:
+    """Insert one open issue whose sha matches the file by default."""
+    with Database(project.db_path, project.root) as database:
+        issue_id = database.insert_issue(
+            aspect_id=aspect_id,
+            path=path,
+            sha256=sha256 if sha256 is not None else sha256_file(project.root / path),
+            description=description,
+            line_start=line_start,
+            line_end=line_end,
+            severity=severity,
+        )
+        if retry_count:
+            database.update_issue(issue_id, retry_count=retry_count)
+    return issue_id
+
+
+def seed_state(
+    project: Project,
+    *,
+    aspect_id: str = "comments",
+    path: str = "src/a.py",
+    outcome: str = "issues",
+    sha256: str | None = None,
+) -> None:
+    """Write one ``file_aspect_state`` row for a tmp project."""
+    with Database(project.db_path, project.root) as database:
+        database.upsert_state(
+            aspect_id,
+            path,
+            sha256 if sha256 is not None else sha256_file(project.root / path),
+            outcome,
+        )
+
+
+def set_created_at(project: Project, issue_id: int, created_at: str) -> None:
+    """Override an issue's ``created_at`` to test queue ordering."""
+    with Database(project.db_path, project.root) as database:
+        with database.connection:
+            database.connection.execute(
+                "UPDATE issues SET created_at = ? WHERE id = ?",
+                (created_at, issue_id),
+            )
+
+
+def python_command(code: str, *, timeout: float = 10.0) -> dict[str, object]:
+    """A hermetic verify command running *code* with this interpreter."""
+    return {
+        "cmd": f"{shlex.quote(sys.executable)} -c {shlex.quote(code)}",
+        "timeout": timeout,
+    }
 
 
 @pytest.fixture

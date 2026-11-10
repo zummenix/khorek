@@ -277,6 +277,33 @@ def resolve_within_root(root: Path, raw: str) -> Path:
     return resolved
 
 
+def resolve_for_write(root: Path, raw: str) -> Path:
+    """Resolve a write target inside *root*, allowing files that do not exist.
+
+    Unlike :func:`resolve_within_root`, the final component may be missing
+    (``write_file`` creates files).  Escapes via absolute paths, ``..``, or a
+    symlinked parent pointing outside the project root are rejected; a symlink
+    inside the root is followed only when its target stays inside.
+    """
+    if not raw or not raw.strip():
+        raise PathEscapeError("path must not be empty")
+    root_real = Path(os.path.realpath(root))
+    candidate = Path(raw)
+    if candidate.is_absolute():
+        target = Path(os.path.realpath(candidate))
+        if not _is_inside(target, root_real):
+            raise PathEscapeError(f"path escapes the project root: {raw}")
+        return target
+
+    normalized = Path(os.path.normpath(candidate.as_posix()))
+    if ".." in normalized.parts:
+        raise PathEscapeError(f"path escapes the project root: {raw}")
+    target = Path(os.path.realpath(root_real / normalized))
+    if not _is_inside(target, root_real):
+        raise PathEscapeError(f"path escapes the project root: {raw}")
+    return target
+
+
 def is_binary(path: Path) -> bool:
     """Return ``True`` when *path* looks binary (NUL byte in the first 8 KiB)."""
     return _is_binary_path(path)
@@ -302,6 +329,7 @@ __all__ = [
     "enumerate_files",
     "is_binary",
     "read_text_file",
+    "resolve_for_write",
     "resolve_within_root",
     "sha256_file",
     "walk_files",

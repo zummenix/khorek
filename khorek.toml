@@ -24,6 +24,7 @@ max_tool_calls = 20
 [agents.fixer]
 prompt = ""
 max_attempts = 3
+max_tool_calls = 20
 
 [agents.verifier]
 prompt = ""
