@@ -44,7 +44,7 @@ the file clean.
 | Git | Not used. No requirement of a clean tree, no commits |
 | Orchestration | LangGraph `StateGraph`, plain function nodes, no checkpointer (the DB is the source of truth) |
 | Config | TOML at `<project>/khorek.toml` |
-| Observability | stdout only for the prototype (progress + end-of-run report) |
+| Observability | stdout progress + opt-in full JSONL traces of every model call, browsable in a local zero-dependency web UI (`khorek traces`); see [tracing.md](tracing.md) |
 
 ## Config file
 
@@ -55,9 +55,16 @@ the file clean.
 [llm]
 base_url = "http://127.0.0.1:11434/v1"
 model = "mimo-v2.6:9b-mxfp8"
-think = true
+think = true              # inherited by every agent unless overridden
 temperature = 0.2
 call_timeout = 600        # seconds per model call
+max_tokens = 8192         # hard output cap (Ollama: num_predict); 0 = omit
+# reasoning_effort = "low" # passed through; think=false forces "none"
+
+[observe]
+enabled = false           # opt-in traces of every model call
+# directory = ".khorek/traces"   # default: <db>.traces
+keep_runs = 30            # newest N runs kept; 0 = keep everything
 
 [defaults]
 max_issues_per_file = 3   # per aspect, per file
@@ -68,6 +75,7 @@ max_cycles = 25           # explore-and-fix no-progress guard
 
 [agents.aspect]
 prompt = ""               # empty = built-in default system prompt
+think = false             # optional per-agent override; omit = inherit [llm]
 max_handoffs = 3
 max_tool_calls = 20
 
@@ -77,6 +85,7 @@ max_tool_calls = 20
 
 [agents.fixer]
 prompt = ""
+think = false
 max_attempts = 3
 max_tool_calls = 20
 
@@ -128,7 +137,9 @@ validated by commands, never by the model.
 
 LLM settings can be overridden from the environment, which wins over the file:
 `KHOREK_LLM_BASE_URL`, `KHOREK_LLM_MODEL`, `KHOREK_LLM_THINK` (`true`/`false`),
-`KHOREK_LLM_TEMPERATURE`, `KHOREK_LLM_CALL_TIMEOUT`.
+`KHOREK_LLM_TEMPERATURE`, `KHOREK_LLM_CALL_TIMEOUT`,
+`KHOREK_LLM_MAX_TOKENS`, `KHOREK_LLM_REASONING_EFFORT`.
+Tracing can be toggled with `KHOREK_TRACE=1|0` and `KHOREK_TRACE_DIR=/path`.
 
 ## Data model
 
@@ -260,6 +271,20 @@ Waiting for a lock is deliberately out of scope for the prototype.
 - HTTP failures or timeouts during a call abort the current agent with a
   structured error; the workflow treats that as a failed pair/issue, not a
   fatal run error. Only preamble failures are fatal.
+- **Thinking and output budget**: `max_tokens` (default 8192) is sent on every
+  call (Ollama maps it to `num_predict`), so a thinking model that never reaches
+  its tool call stops with `finish_reason=length` instead of running until the
+  timeout; the agent then aborts immediately with a `budget` error rather than
+  retrying the same capped call. `think=false` is mapped to
+  `reasoning_effort="none"` on Ollama's
+  `/v1` endpoint; `reasoning_effort` can also be set explicitly. Each agent may
+  override `[llm].think` with its own `think` key. This was added after
+  dogfooding: `mimo-v2.6` reviewing a 158-line file spent the full 600 s in a
+  repeating thinking loop; with thinking off the same request called its tool
+  in 9 s. Full evidence is captured in the traces.
+- **Unknown tools**: a call to a tool the harness did not expose (for example
+  `bash`, which the model may know from other harnesses) gets one repair whose
+  tool result lists the available tool names and states that no shell exists.
 - **Ollama context note**: `/v1` does not accept `num_ctx`, so the server must
   be started with `OLLAMA_CONTEXT_LENGTH` large enough for `max_file_bytes`.
   khorek warns when an assembled prompt exceeds the configured byte budget.
@@ -287,13 +312,15 @@ Every workflow command does the same preamble and teardown:
 
 1. Resolve the project root and load/validate config (`fix` and
    `explore-and-fix` additionally require at least one `[[verify]]` command).
-2. Probe the model with `GET {base_url}/models`; failure is fatal (exit `2`).
-3. Resolve the database path (slug or `--db`) and acquire `<db>.lock`; exit `2`
-   if held.
-4. Open the DB, validate `meta` against the project root/schema, apply the
+2. Resolve the database path (slug or `--db`) and start the optional trace
+   recorder (`[observe]` / `--trace` / `--trace-dir`).
+3. Probe the model with `GET {base_url}/models`; failure is fatal (exit `2`).
+4. Acquire `<db>.lock`; exit `2` if held.
+5. Open the DB, validate `meta` against the project root/schema, apply the
    schema, compare with the config and prune drifted aspects.
-5. Run the workflow.
-6. Print the end-of-run report and release the lock.
+6. Run the workflow.
+7. Print the end-of-run report (and the trace path when tracing is on) and
+   release the lock.
 
 `reset` is the exception: it resolves the project root and database path, takes
 the lock, deletes the database and the lock file, and exits. It needs no config
@@ -406,8 +433,13 @@ descriptor is closed. No confirmation prompt in the prototype.
 
 ```
 khorek explore        [-p PATH] [--limit N] [--config PATH] [--db PATH]
+                      [--trace | --no-trace] [--trace-dir DIR]
 khorek fix            [-p PATH] [--limit N] [--config PATH] [--db PATH]
+                      [--trace | --no-trace] [--trace-dir DIR]
 khorek explore-and-fix[-p PATH] [--limit N] [--config PATH] [--db PATH]
+                      [--trace | --no-trace] [--trace-dir DIR]
+khorek traces         [-p PATH] [--db PATH] [--trace-dir DIR]
+                      [--host HOST] [--port PORT] [--no-open] [--verbose]
 khorek reset          [-p PATH] [--db PATH]
 ```
 
@@ -438,8 +470,10 @@ khorek/
 ├── uv.toml                    # project-local uv cache (sandbox-friendly)
 ├── .python-version            # 3.12
 ├── pyproject.toml            # uv, ruff, ty, pytest config, entry point
-├── khorek.toml               # dogfood config: dummy aspect for the real-LLM e2e
-├── dummy/                    # deliberate inconsistency for the real-LLM e2e
+├── khorek.toml               # dogfood config: comments aspect over src/
+├── docs/
+│   ├── prototype-plan.md
+│   └── tracing.md            # trace format, viewer, debugging recipe
 ├── src/khorek/
 │   ├── __init__.py
 │   ├── __main__.py
@@ -452,6 +486,9 @@ khorek/
 │   ├── snapshots.py          # in-memory originals + restore
 │   ├── verify.py             # subprocess runner, output tails
 │   ├── report.py             # stdout progress + end-of-run summary
+│   ├── trace.py              # JSONL trace recorder + read-only store
+│   ├── trace_server.py       # local web UI server (stdlib only)
+│   ├── web/                  # trace viewer HTML/CSS/JS (no build step)
 │   ├── agents/
 │   │   ├── aspect.py
 │   │   ├── explorer.py
@@ -463,7 +500,7 @@ khorek/
 │       └── fix.py            # LangGraph StateGraph
 └── tests/
     ├── conftest.py           # httpx.MockTransport fake model, tmp project, --db tmp file
-    ├── fixtures/dummy_project/
+    ├── fixtures/e2e_project/ # self-contained real-LLM project + verifier
     └── test_*.py
 ```
 

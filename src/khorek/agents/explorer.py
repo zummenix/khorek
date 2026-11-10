@@ -38,6 +38,8 @@ class ExplorerAgent:
             max_tool_calls=self._config.max_tool_calls,
             force_tool_call=False,
             text_is_final=True,
+            agent="explorer",
+            think=self._config.think,
         )
         return result.text
 

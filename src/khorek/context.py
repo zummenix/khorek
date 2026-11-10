@@ -13,6 +13,7 @@ from khorek.config import Config
 from khorek.db import Database
 from khorek.llm import LLMClient
 from khorek.report import Reporter
+from khorek.trace import TraceRecorder
 
 
 @dataclass
@@ -24,6 +25,7 @@ class AppContext:
     database: Database
     llm: LLMClient
     reporter: Reporter
+    tracer: TraceRecorder | None = None
 
 
 __all__ = ["AppContext"]

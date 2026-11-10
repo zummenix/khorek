@@ -13,7 +13,12 @@ for one specific kind of issue (the "aspect") and report what you find.
   is clean for this aspect, report an empty list.
 - Report issues in the model's own **impact order**: the most important first.
 - One issue per distinct problem. Give a concrete description of what is wrong;
-  do not leave descriptions empty.
+  do not leave descriptions empty. Quote the exact offending text verbatim so
+  the fixer can locate it in the file.
+- Report only claims that the code factually contradicts (wrong behavior, stale
+  name, wrong return type, wrong parameter, code that no longer exists). A
+  docstring that uses a loose synonym is not an inconsistency; do not report
+  wording preferences.
 - `line_start` and `line_end` must be line numbers inside the file. When a
   problem spans one line, use the same number for both.
 - `severity` is one of `low`, `medium`, or `high`.

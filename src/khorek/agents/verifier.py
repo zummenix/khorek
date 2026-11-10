@@ -110,6 +110,7 @@ class VerifierAgent:
 
     def __init__(self, client: LLMClient, *, config: VerifierAgentConfig) -> None:
         self._client = client
+        self._config = config
         self._system_prompt = config.prompt.strip() or default_prompt("verifier")
         self._tools = [report_verification_tool()]
 
@@ -124,6 +125,8 @@ class VerifierAgent:
             text_is_final=False,
             terminal_tool="report_verification",
             terminal_schema=VerificationReport,
+            agent="verifier",
+            think=self._config.think,
         )
         data = result.data
         if not isinstance(data, VerificationReport):

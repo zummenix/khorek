@@ -307,6 +307,8 @@ class FixerAgent:
             text_is_final=False,
             terminal_tool="report_fix_result",
             terminal_schema=FixReport,
+            agent=f"fixer:#{issue.id}:{path}",
+            think=self._config.think,
         )
         data = result.data
         if not isinstance(data, FixReport):

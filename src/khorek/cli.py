@@ -15,6 +15,8 @@ from khorek.db import Database, DatabaseError, default_db_path
 from khorek.llm import LLMClient, ModelUnavailable
 from khorek.lock import LockError, LockHeld, acquire
 from khorek.report import Reporter
+from khorek.trace import TraceRecorder, trace_dir_for
+from khorek.trace_server import serve as serve_traces
 from khorek.workflows.explore import run_explore
 from khorek.workflows.explore_and_fix import run_explore_and_fix
 from khorek.workflows.fix import run_fix
@@ -52,6 +54,17 @@ def _add_workflow_arguments(parser: argparse.ArgumentParser) -> None:
         default=None,
         help="database file to use (default: ~/.khorek/<slug>.db)",
     )
+    parser.add_argument(
+        "--trace",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="record full model-call traces (default: [observe].enabled)",
+    )
+    parser.add_argument(
+        "--trace-dir",
+        default=None,
+        help="directory for run traces (default: <db>.traces)",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -82,6 +95,36 @@ def build_parser() -> argparse.ArgumentParser:
         description="Fix open issues, explore for new ones, and fix those too.",
     )
     _add_workflow_arguments(explore_and_fix)
+
+    traces = subparsers.add_parser(
+        "traces",
+        help="browse recorded model-call traces in a browser",
+        description="Serve a local web UI over the run traces recorded by khorek.",
+    )
+    traces.add_argument(
+        "-p",
+        "--path",
+        default=".",
+        help="project root whose traces should be shown (default: current directory)",
+    )
+    traces.add_argument(
+        "--db",
+        default=None,
+        help="database whose traces should be shown (default: ~/.khorek/<slug>.db)",
+    )
+    traces.add_argument(
+        "--trace-dir",
+        default=None,
+        help="trace directory to serve (overrides the default <db>.traces)",
+    )
+    traces.add_argument("--host", default="127.0.0.1", help="bind address (default: 127.0.0.1)")
+    traces.add_argument("--port", type=int, default=8765, help="port (default: 8765)")
+    traces.add_argument(
+        "--no-open",
+        action="store_true",
+        help="do not open a browser window",
+    )
+    traces.add_argument("--verbose", action="store_true", help="log HTTP requests")
 
     reset = subparsers.add_parser(
         "reset",
@@ -155,8 +198,10 @@ def _run_workflow(
     """Shared preamble/teardown for every workflow command.
 
     Resolve the project, load and validate config, optionally require a
-    ``[[verify]]`` command, preflight the model, take the lock, open and
-    validate the DB, prune config drift, run *body*, then release everything.
+    ``[[verify]]`` command, take the lock, open and validate the DB, prune
+    config drift, run *body*, then release everything.  The model probe and the
+    trace recorder are set up before the lock so a fatal run still leaves a
+    record of why it failed.
     """
     project_root = _resolve_project(args.path)
     if project_root is None:
@@ -172,19 +217,65 @@ def _run_workflow(
         )
         return EXIT_FATAL
 
+    db_path = _resolve_db_path(project_root, args.db)
+    trace_enabled = getattr(args, "trace", None)
+    if getattr(args, "trace_dir", None) is not None:
+        trace_enabled = True
+    tracer = TraceRecorder.from_config(
+        config.observe,
+        db_path=db_path,
+        run={
+            "command": command,
+            "project_root": str(project_root),
+            "model": config.llm.model,
+            "db_path": str(db_path),
+            "argv": list(sys.argv[1:]),
+        },
+        directory=getattr(args, "trace_dir", None),
+        enabled=trace_enabled,
+    )
+    if tracer is not None:
+        tracer.record(
+            "run_start",
+            command=command,
+            project_root=str(project_root),
+            model=config.llm.model,
+            db_path=str(db_path),
+            config={
+                "think": config.llm.think,
+                "temperature": config.llm.temperature,
+                "max_tokens": config.llm.max_tokens,
+                "reasoning_effort": config.llm.reasoning_effort,
+                "think_overrides": {
+                    "aspect": config.agents.aspect.think,
+                    "explorer": config.agents.explorer.think,
+                    "fixer": config.agents.fixer.think,
+                    "verifier": config.agents.verifier.think,
+                },
+                "max_prompt_bytes": config.defaults.max_prompt_bytes,
+                "max_tool_output_bytes": config.defaults.max_tool_output_bytes,
+                "max_tool_calls": {
+                    "aspect": config.agents.aspect.max_tool_calls,
+                    "explorer": config.agents.explorer.max_tool_calls,
+                    "fixer": config.agents.fixer.max_tool_calls,
+                },
+            },
+        )
+
     llm = LLMClient(
         config.llm,
         transport=transport,
         max_prompt_bytes=config.defaults.max_prompt_bytes,
         max_tool_output_bytes=config.defaults.max_tool_output_bytes,
+        tracer=tracer,
     )
+    exit_code = EXIT_FATAL
     try:
         try:
             llm.preflight()
         except ModelUnavailable as exc:
             return _fail(str(exc))
 
-        db_path = _resolve_db_path(project_root, args.db)
         try:
             with acquire(db_path):
                 try:
@@ -197,8 +288,10 @@ def _run_workflow(
                             database=database,
                             llm=llm,
                             reporter=reporter,
+                            tracer=tracer,
                         )
-                        return body(app, args.limit, pruned)
+                        exit_code = body(app, args.limit, pruned)
+                        return exit_code
                 except DatabaseError as exc:
                     return _fail(str(exc))
         except LockHeld as exc:
@@ -207,6 +300,12 @@ def _run_workflow(
             return _fail(str(exc))
     finally:
         llm.close()
+        if tracer is not None:
+            tracer.close(
+                exit_code=exit_code,
+                status="fatal" if exit_code == EXIT_FATAL else ("issues" if exit_code else "ok"),
+            )
+            print(f"trace: {tracer.run_dir}", flush=True)
 
 
 def _run_explore(args: argparse.Namespace, transport: httpx.BaseTransport | None) -> int:
@@ -259,6 +358,42 @@ def _run_explore_and_fix(args: argparse.Namespace, transport: httpx.BaseTranspor
         require_verify=True,
         body=body,
     )
+
+
+def _run_traces(args: argparse.Namespace) -> int:
+    project_root = _resolve_project(args.path)
+    if project_root is None:
+        return EXIT_FATAL
+    if args.trace_dir is not None:
+        root = Path(args.trace_dir).expanduser().resolve()
+    else:
+        root = None
+        try:
+            config = load_config(project_root)
+        except ConfigError:
+            config = None
+        if config is not None and config.observe.directory.strip():
+            root = Path(config.observe.directory).expanduser().resolve()
+        if root is None:
+            root = trace_dir_for(_resolve_db_path(project_root, args.db))
+    if not root.exists():
+        print(
+            f"khorek: no traces at {root}; run a workflow with --trace or "
+            "set [observe] enabled = true",
+            file=sys.stderr,
+        )
+        return EXIT_FATAL
+    try:
+        serve_traces(
+            root,
+            host=args.host,
+            port=args.port,
+            open_browser=not args.no_open,
+            verbose=args.verbose,
+        )
+    except SystemExit:
+        return EXIT_FATAL
+    return EXIT_OK
 
 
 def _run_reset(args: argparse.Namespace) -> int:
@@ -317,6 +452,8 @@ def main(
         return _run_fix(args, transport)
     if args.command == "explore-and-fix":
         return _run_explore_and_fix(args, transport)
+    if args.command == "traces":
+        return _run_traces(args)
     if args.command == "reset":
         return _run_reset(args)
 

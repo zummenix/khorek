@@ -24,6 +24,8 @@ DEFAULT_MAX_TOOL_CALLS = 20
 DEFAULT_MAX_ATTEMPTS = 3
 DEFAULT_TEMPERATURE = 0.2
 DEFAULT_CALL_TIMEOUT = 600.0
+DEFAULT_MAX_TOKENS = 8192
+DEFAULT_KEEP_TRACES = 30
 
 # Environment overrides for the [llm] section; the environment wins.
 ENV_BASE_URL = "KHOREK_LLM_BASE_URL"
@@ -31,6 +33,8 @@ ENV_MODEL = "KHOREK_LLM_MODEL"
 ENV_THINK = "KHOREK_LLM_THINK"
 ENV_TEMPERATURE = "KHOREK_LLM_TEMPERATURE"
 ENV_CALL_TIMEOUT = "KHOREK_LLM_CALL_TIMEOUT"
+ENV_MAX_TOKENS = "KHOREK_LLM_MAX_TOKENS"
+ENV_REASONING_EFFORT = "KHOREK_LLM_REASONING_EFFORT"
 
 
 class ConfigError(Exception):
@@ -51,6 +55,20 @@ class LLMConfig(_StrictModel):
     think: bool = True
     temperature: float = Field(default=DEFAULT_TEMPERATURE, ge=0.0, le=2.0)
     call_timeout: float = Field(default=DEFAULT_CALL_TIMEOUT, gt=0.0)
+    max_tokens: int = Field(default=DEFAULT_MAX_TOKENS, ge=0)
+    # Model-defined level ("none", "low", ...), passed through when non-empty.
+    # ``think = false`` is folded into ``reasoning_effort = "none"`` for models
+    # (such as mimo-v2.6 on Ollama) whose OpenAI endpoint only supports a
+    # boolean thinking switch.
+    reasoning_effort: str | None = None
+
+
+class ObserveConfig(_StrictModel):
+    """Opt-in traces of every model call, for debugging the harness."""
+
+    enabled: bool = False
+    directory: str = ""
+    keep_runs: int = Field(default=DEFAULT_KEEP_TRACES, ge=0)
 
 
 class DefaultsConfig(_StrictModel):
@@ -67,6 +85,7 @@ class AspectAgentConfig(_StrictModel):
     """Aspect agent settings (system prompt and agent budgets)."""
 
     prompt: str = ""
+    think: bool | None = None  # None = inherit [llm].think
     max_handoffs: int = Field(default=DEFAULT_MAX_HANDOFFS, ge=0)
     max_tool_calls: int = Field(default=DEFAULT_MAX_TOOL_CALLS, gt=0)
 
@@ -75,6 +94,7 @@ class ExplorerAgentConfig(_StrictModel):
     """Explorer sub-agent settings."""
 
     prompt: str = ""
+    think: bool | None = None  # None = inherit [llm].think
     max_tool_calls: int = Field(default=DEFAULT_MAX_TOOL_CALLS, gt=0)
 
 
@@ -82,6 +102,7 @@ class FixerAgentConfig(_StrictModel):
     """Fixer settings (max rounds per issue and tool budget per round)."""
 
     prompt: str = ""
+    think: bool | None = None  # None = inherit [llm].think
     max_attempts: int = Field(default=DEFAULT_MAX_ATTEMPTS, gt=0)
     max_tool_calls: int = Field(default=DEFAULT_MAX_TOOL_CALLS, gt=0)
 
@@ -90,6 +111,7 @@ class VerifierAgentConfig(_StrictModel):
     """Verifier settings (consumed by Phase 3)."""
 
     prompt: str = ""
+    think: bool | None = None  # None = inherit [llm].think
 
 
 class AgentsConfig(_StrictModel):
@@ -122,6 +144,7 @@ class Config(_StrictModel):
 
     llm: LLMConfig
     defaults: DefaultsConfig = Field(default_factory=DefaultsConfig)
+    observe: ObserveConfig = Field(default_factory=ObserveConfig)
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
     verify: list[VerifyCommand] = Field(default_factory=list)
     aspects: list[AspectConfig] = Field(default_factory=list)
@@ -183,6 +206,15 @@ def _env_overrides() -> dict[str, object]:
             overrides["call_timeout"] = float(call_timeout)
         except ValueError as exc:
             raise ConfigError(f"{ENV_CALL_TIMEOUT} must be a number, got {call_timeout!r}") from exc
+    max_tokens = os.environ.get(ENV_MAX_TOKENS)
+    if max_tokens is not None:
+        try:
+            overrides["max_tokens"] = int(max_tokens)
+        except ValueError as exc:
+            raise ConfigError(f"{ENV_MAX_TOKENS} must be an integer, got {max_tokens!r}") from exc
+    reasoning_effort = os.environ.get(ENV_REASONING_EFFORT)
+    if reasoning_effort is not None:
+        overrides["reasoning_effort"] = reasoning_effort.strip() or None
     return overrides
 
 
@@ -245,10 +277,12 @@ __all__ = [
     "AgentsConfig",
     "Config",
     "ConfigError",
+    "DEFAULT_MAX_TOKENS",
     "DefaultsConfig",
     "ExplorerAgentConfig",
     "FixerAgentConfig",
     "LLMConfig",
+    "ObserveConfig",
     "VerifyCommand",
     "VerifierAgentConfig",
     "load_config",

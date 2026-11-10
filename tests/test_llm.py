@@ -313,3 +313,109 @@ def test_timeout_is_structured() -> None:
             text_is_final=True,
         )
     assert exc_info.value.code == "timeout"
+
+
+def test_payload_caps_tokens_and_disables_thinking() -> None:
+    fake = FakeModel([tool_message("report", {"value": "ok"})])
+    config = _config().model_copy(update={"think": False, "max_tokens": 123})
+    client = LLMClient(config, transport=fake.transport)
+    _run(client)
+    payload = fake.chat_requests[0]
+    assert payload["max_tokens"] == 123
+    assert payload["reasoning_effort"] == "none"
+    assert "chat_template_kwargs" not in payload
+
+
+def test_payload_passes_explicit_reasoning_effort() -> None:
+    fake = FakeModel([tool_message("report", {"value": "ok"})])
+    config = _config().model_copy(update={"think": True, "reasoning_effort": "low"})
+    client = LLMClient(config, transport=fake.transport)
+    _run(client)
+    assert fake.chat_requests[0]["reasoning_effort"] == "low"
+
+
+def test_payload_omits_max_tokens_when_zero() -> None:
+    fake = FakeModel([tool_message("report", {"value": "ok"})])
+    config = _config().model_copy(update={"max_tokens": 0})
+    client = LLMClient(config, transport=fake.transport)
+    _run(client)
+    assert "max_tokens" not in fake.chat_requests[0]
+
+
+def test_unknown_tool_repair_names_available_tools_and_no_shell() -> None:
+    fake = FakeModel(
+        [
+            tool_message("bash", {"command": "ls"}),
+            tool_message("report", {"value": "recovered"}),
+        ]
+    )
+    result = _run(_client(fake))
+    assert isinstance(result.data, Report)
+    assert result.data.value == "recovered"
+    repair = json.loads(fake.tool_results(1)[0])
+    assert repair["error"] == "invalid_arguments"
+    assert repair["available_tools"] == ["echo", "report"]
+    assert "no shell" in repair["message"]
+    assert "bash" in repair["message"]
+
+
+def test_run_agent_think_override_wins_over_config() -> None:
+    fake = FakeModel([tool_message("report", {"value": "ok"})])
+    config = _config().model_copy(update={"think": True})
+    client = LLMClient(config, transport=fake.transport)
+    client.run_agent(
+        system_prompt="system",
+        user_prompt="user",
+        tools=[_echo_tool(), _report_tool()],
+        max_tool_calls=10,
+        terminal_tool="report",
+        terminal_schema=Report,
+        think=False,
+    )
+    assert fake.chat_requests[0]["reasoning_effort"] == "none"
+
+
+def test_run_agent_think_override_true_leaves_default_thinking_on() -> None:
+    fake = FakeModel([tool_message("report", {"value": "ok"})])
+    config = _config().model_copy(update={"think": False, "reasoning_effort": None})
+    client = LLMClient(config, transport=fake.transport)
+    client.run_agent(
+        system_prompt="system",
+        user_prompt="user",
+        tools=[_echo_tool(), _report_tool()],
+        max_tool_calls=10,
+        terminal_tool="report",
+        terminal_schema=Report,
+        think=True,
+    )
+    assert "reasoning_effort" not in fake.chat_requests[0]
+
+
+def test_finish_reason_length_without_tool_call_aborts_immediately() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/models"):
+            return httpx.Response(200, json={"data": []})
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {"role": "assistant", "content": None},
+                        "finish_reason": "length",
+                    }
+                ]
+            },
+        )
+
+    client = LLMClient(_config(), transport=httpx.MockTransport(handler))
+    with pytest.raises(AgentError) as exc_info:
+        client.run_agent(
+            system_prompt="system",
+            user_prompt="user",
+            tools=[_echo_tool(), _report_tool()],
+            max_tool_calls=10,
+            terminal_tool="report",
+            terminal_schema=Report,
+        )
+    assert exc_info.value.code == "budget"
+    assert "thinking loop" in str(exc_info.value)

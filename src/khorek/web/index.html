@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>khorek traces</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">khorek <span>traces</span></div>
+  <div class="root" id="trace-root" title="trace directory"></div>
+  <div class="live on" id="live" role="button" tabindex="0" title="pause/resume live refresh">
+    <span class="dot"></span><span id="live-label">live</span>
+  </div>
+</header>
+
+<div class="layout">
+  <aside class="sidebar">
+    <div class="sidebar-head"><span>Runs</span><span id="run-count">0</span></div>
+    <div class="run-list" id="run-list"></div>
+  </aside>
+
+  <main class="main">
+    <div class="empty" id="empty">
+      <div>Select a run to inspect what the model saw.</div>
+      <div style="margin-top:10px"><kbd>/</kbd> search &nbsp; <kbd>j</kbd>/<kbd>k</kbd> move &nbsp; <kbd>Enter</kbd> expand</div>
+    </div>
+
+    <div id="run-view" class="hidden">
+      <section class="run-header" id="run-header"></section>
+
+      <section class="toolbar">
+        <input id="search" type="search" placeholder="Filter events (tool name, path, thinking text…)" autocomplete="off">
+        <select id="filter-agent"><option value="">all agents</option></select>
+        <select id="filter-kind"><option value="">all kinds</option></select>
+        <span class="count" id="filter-count"></span>
+        <span class="spacer"></span>
+        <button id="expand-all" class="ghost" title="expand or collapse all events">Expand all</button>
+        <button id="refresh" class="ghost" title="refresh now">Refresh</button>
+      </section>
+
+      <div id="timeline"></div>
+    </div>
+  </main>
+</div>
+
+<div class="toast" id="toast"></div>
+<script src="/app.js"></script>
+</body>
+</html>

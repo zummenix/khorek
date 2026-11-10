@@ -141,6 +141,8 @@ class AspectAgent:
             text_is_final=False,
             terminal_tool="report_issues",
             terminal_schema=IssueReport,
+            agent=f"aspect:{aspect.id}:{path}",
+            think=self._config.think,
         )
         data = result.data
         if not isinstance(data, IssueReport):

@@ -209,3 +209,32 @@ def test_fixer_defaults_and_overrides(tmp_path: Path) -> None:
     config = load_config(project.root)
     assert config.agents.fixer.max_attempts == 2
     assert config.agents.fixer.max_tool_calls == 5
+
+
+def test_per_agent_think_override_inherits_otherwise(tmp_path: Path) -> None:
+    project = make_project(
+        tmp_path / "project",
+        llm={"think": True},
+        agents={"aspect": {"prompt": "", "think": False}},
+    )
+    config = load_config(project.root)
+    assert config.llm.think is True
+    assert config.agents.aspect.think is False
+    assert config.agents.explorer.think is None
+    assert config.agents.fixer.think is None
+
+
+def test_llm_max_tokens_and_reasoning_effort_env(tmp_path: Path, monkeypatch) -> None:
+    project = make_project(tmp_path / "project")
+    monkeypatch.setenv("KHOREK_LLM_MAX_TOKENS", "1234")
+    monkeypatch.setenv("KHOREK_LLM_REASONING_EFFORT", "low")
+    config = load_config(project.root)
+    assert config.llm.max_tokens == 1234
+    assert config.llm.reasoning_effort == "low"
+
+
+def test_observe_defaults_to_disabled(project) -> None:
+    config = load_config(project.root)
+    assert config.observe.enabled is False
+    assert config.observe.directory == ""
+    assert config.observe.keep_runs == 30

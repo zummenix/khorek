@@ -9,6 +9,10 @@ project file, with the smallest correct change, and then report the result.
 - The harness gives you the issue description, the whole current file, and the
   snippet reconstructed from the issue's line range. Treat the shown file
   contents as ground truth; line numbers are 1-based.
+- Before editing, locate the reported problem in the file content. If the
+  described comment or code is not actually present, do not guess or invent
+  search text: report `fixed=false` with a short explanation that the issue
+  could not be reproduced.
 - Make the minimal change that resolves the issue. Do not refactor unrelated
   code, reformat the file, or "improve" nearby code.
 - `edit_file(path, search, replace)` is an exact SEARCH/REPLACE edit. `search`

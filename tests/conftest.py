@@ -172,6 +172,10 @@ class Project:
     def exists(self, relative: str) -> bool:
         return (self.root / relative).exists()
 
+    @property
+    def trace_root(self) -> Path:
+        return self.db_path.with_name(self.db_path.name + ".traces")
+
 
 def _toml_value(value: Any) -> str:
     if isinstance(value, bool):
@@ -193,6 +197,7 @@ def write_config(
     defaults: dict[str, Any] | None = None,
     agents: dict[str, dict[str, Any]] | None = None,
     verify: Sequence[dict[str, Any]] | None = None,
+    observe: dict[str, Any] | None = None,
 ) -> Path:
     """Write a valid khorek.toml, merging test overrides into the defaults."""
     llm_values = {**DEFAULT_LLM, **(llm or {})}
@@ -206,6 +211,10 @@ def write_config(
     lines.extend(f"{key} = {_toml_value(value)}" for key, value in llm_values.items())
     lines.extend(["", "[defaults]"])
     lines.extend(f"{key} = {_toml_value(value)}" for key, value in default_values.items())
+
+    if observe is not None:
+        lines.extend(["", "[observe]"])
+        lines.extend(f"{key} = {_toml_value(value)}" for key, value in observe.items())
 
     for agent_name, agent_config in agent_values.items():
         lines.extend(["", f"[agents.{agent_name}]"])
@@ -234,6 +243,7 @@ def make_project(
     defaults: dict[str, Any] | None = None,
     agents: dict[str, dict[str, Any]] | None = None,
     verify: Sequence[dict[str, Any]] | None = None,
+    observe: dict[str, Any] | None = None,
 ) -> Project:
     """Create a tmp project with a config and files."""
     root = base
@@ -249,6 +259,7 @@ def make_project(
         defaults=defaults,
         agents=agents,
         verify=verify,
+        observe=observe,
     )
     return project
 
