@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "khorek"
+version = "0.1.0"
+description = "Scout a codebase for issues and fix them with local agentic LLMs."
+requires-python = ">=3.12"
+dependencies = [
+    "httpx",
+    "langgraph",
+    "pathspec",
+    "pydantic",
+]
+
+[project.scripts]
+khorek = "khorek.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "ruff",
+    "ty",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+extend-exclude = [".venv", ".uv-cache", ".uv-python"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
