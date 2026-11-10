@@ -78,6 +78,7 @@ max_tool_calls = 20
 [agents.fixer]
 prompt = ""
 max_attempts = 3
+max_tool_calls = 20
 
 [agents.verifier]
 prompt = ""
@@ -357,6 +358,17 @@ For one issue:
    next issue. The run never aborts on a single failure.
 6. End of run: printed report of fixed / failed / skipped-stale / remaining.
 
+Retry semantics are deliberately narrow. A round that reports `fixed: false`
+ends this issue's attempts immediately; so does a Fixer agent error (loop,
+budget, timeout, schema, no-tool-call). Only a *verification* failure consumes
+one of the remaining attempts and feeds the Verifier summary into the next
+round. Verification runs the commands in order and stops at the first failing
+one; the Verifier is invoked only for that failure.
+
+A round that reports `fixed: true` but leaves every snapshotted file
+byte-identical is treated as a failed fix (it cannot be verified as a change),
+so an issue is never marked clean without an actual edit.
+
 `--limit N` caps the number of issues *attempted* in the run; a stale skip
 counts as attempted because it was dequeued.
 
@@ -569,8 +581,10 @@ bookkeeping, and the stdout report.
 **DoD (deterministic tests)**: fake-model tests for a successful fix marking the
 pair clean, a verification failure feeding errors back to the Fixer, exhausted
 attempts restoring the file and incrementing `retry_count`, stale-hash issue
-deletion, a fix touching a second file being restored too, and the
-fix-induced hash advance letting a second issue in the same file be fixed.
+deletion, a fix touching a second file being restored too, the
+fix-induced hash advance letting a second issue in the same file be fixed, and
+a `fixed: true` report with no file change failing the issue instead of
+marking it clean.
 
 **DoD (real LLM)**: the phase-2 e2e run resets its DB, so re-create the issue
 first (`khorek explore ... --limit 5`), then run
