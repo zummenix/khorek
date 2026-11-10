@@ -1,0 +1,46 @@
+[llm]
+base_url = "http://127.0.0.1:11434/v1"
+model = "mimo-v2.6:9b-mxfp8"
+think = true
+temperature = 0.2
+call_timeout = 600
+
+[defaults]
+max_issues_per_file = 3
+max_file_bytes = 200000
+max_prompt_bytes = 400000
+max_tool_output_bytes = 16000
+max_cycles = 25
+
+[agents.aspect]
+prompt = ""
+max_handoffs = 3
+max_tool_calls = 20
+
+[agents.explorer]
+prompt = ""
+max_tool_calls = 20
+
+[agents.fixer]
+prompt = ""
+max_attempts = 3
+
+[agents.verifier]
+prompt = ""
+
+# Run in order, first failure is reported back to the Fixer.
+# Commands must be non-mutating checks: the harness does not restore side
+# effects they leave behind, only the files the Fixer touched.
+[[verify]]
+cmd = "uv run ruff format --check ."
+timeout = 120
+
+[[verify]]
+cmd = "uv run pytest -q"
+timeout = 600
+
+[[aspects]]
+id = "comments"
+prompt = "Look at the comments and find those that are out of sync or contain inconsistencies."
+files = ["dummy/"]
+max_issues_per_file = 2
