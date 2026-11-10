@@ -12,6 +12,7 @@ from khorek.db import Database, default_db_path
 from khorek.lock import lock_path_for
 from tests.conftest import (
     FakeModel,
+    explore_and_fix_args,
     explore_args,
     fix_args,
     held_lock,
@@ -39,9 +40,52 @@ def test_help_exits_zero() -> None:
     assert exc_info.value.code == 0
 
 
-def test_explore_and_fix_stays_unimplemented(capsys) -> None:
-    assert main(["explore-and-fix"]) == 2
-    assert "not implemented yet" in capsys.readouterr().err
+def test_explore_and_fix_requires_a_verify_command(tmp_path: Path, capsys) -> None:
+    project = make_project(tmp_path / "project")
+    fake = FakeModel([])
+
+    assert run_cli(fake, *explore_and_fix_args(project)) == 2
+
+    assert fake.model_requests == 0
+    assert not project.db_path.exists()
+    captured = capsys.readouterr()
+    assert "explore-and-fix requires" in captured.err
+    assert "[[verify]]" in captured.err
+
+
+def test_explore_and_fix_runs_the_combined_workflow(tmp_path: Path, capsys) -> None:
+    project = make_project(
+        tmp_path / "project",
+        verify=[{"cmd": "true", "timeout": 10}],
+    )
+    fake = FakeModel([report()])
+
+    assert run_cli(fake, *explore_and_fix_args(project)) == 0
+
+    assert fake.model_requests == 1
+    assert fake.chat_calls == 1
+    output = capsys.readouterr().out
+    assert "explore-and-fix summary:" in output
+    assert "explore summary:" not in output
+    assert "\nfix summary:" not in "\n" + output
+
+
+def test_explore_and_fix_held_lock_exits_2(tmp_path: Path, capsys) -> None:
+    project = make_project(
+        tmp_path / "project",
+        files={"src/a.py": "# correct\nvalue = 1\n"},
+        verify=[{"cmd": "true", "timeout": 10}],
+    )
+    fake = FakeModel([report()])
+    assert run_cli(fake, *explore_and_fix_args(project)) == 0
+    before = project.db_path.read_bytes()
+
+    with held_lock(lock_path_for(project.db_path)):
+        assert run_cli(fake, *explore_and_fix_args(project)) == 2
+
+    assert project.db_path.read_bytes() == before
+    assert "locked by process 999999" in capsys.readouterr().err
+    assert fake.chat_calls == 1
 
 
 def test_fix_requires_a_verify_command(tmp_path: Path, capsys) -> None:

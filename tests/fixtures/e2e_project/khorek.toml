@@ -1,0 +1,25 @@
+# Real model endpoint.  The repo-level khorek.toml is not used: this fixture
+# is a self-contained project so the Phase 4 e2e never explores src/.
+[llm]
+base_url = "http://127.0.0.1:11434/v1"
+model = "mimo-v2.6:9b-mxfp8"
+think = true
+temperature = 0.0
+call_timeout = 600
+
+# Real verification, not a no-op: fails while any comment contradicts the code
+# it describes, so a fix cannot be marked clean without an actual correction.
+[[verify]]
+cmd = "python3 verify_comments.py"
+timeout = 120
+
+# Scoped to exactly one file with two deliberately inconsistent comments.  The
+# aspect reports one issue that covers every inconsistent comment: with a
+# whole-file verifier, a single verified fix necessarily makes the file fully
+# consistent, so a second issue for the same file would be a no-op by the time
+# it is dequeued (Phase 3's fix/verify rules treat "no change" as a failure).
+[[aspects]]
+id = "comments"
+prompt = "Read math_utils.py and compare every comment with the code it describes. Report exactly one issue for the file: list every comment that contradicts its code, with line numbers, and set line_start and line_end to span the inconsistent comments. Report no issue when every comment matches its code."
+files = ["math_utils.py"]
+max_issues_per_file = 1

@@ -282,6 +282,18 @@ def fix_args(project: Project, *extra: str | Path) -> tuple[str | Path, ...]:
     )
 
 
+def explore_and_fix_args(project: Project, *extra: str | Path) -> tuple[str | Path, ...]:
+    """Standard ``explore-and-fix`` arguments for a tmp project."""
+    return (
+        "explore-and-fix",
+        "-p",
+        project.root,
+        "--db",
+        project.db_path,
+        *extra,
+    )
+
+
 def seed_issue(
     project: Project,
     *,

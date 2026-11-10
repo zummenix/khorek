@@ -22,7 +22,7 @@ Queues and round semantics follow the plan exactly:
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, cast
 
@@ -44,10 +44,20 @@ _SEVERITY_RANK = {"high": 0, "medium": 1, "low": 2}
 _UNKNOWN_SEVERITY_RANK = len(_SEVERITY_RANK)
 
 
-def build_queue(database: Database) -> list[Issue]:
-    """Return open issues in fix order (computed once per run)."""
+def build_queue(
+    database: Database,
+    *,
+    exclude_ids: Collection[int] = (),
+) -> list[Issue]:
+    """Return open issues in fix order (computed once per run).
+
+    ``exclude_ids`` is used by the combined explore-and-fix workflow: issues
+    already attempted in this run must never be dequeued a second time, even
+    though they stay open after a failure.
+    """
+    excluded = set(exclude_ids)
     return sorted(
-        database.list_issues(),
+        (issue for issue in database.list_issues() if issue.id not in excluded),
         key=lambda issue: (
             issue.retry_count,
             _SEVERITY_RANK.get(issue.severity, _UNKNOWN_SEVERITY_RANK),
@@ -103,10 +113,18 @@ class FixState:
 class _FixWorkflow:
     """Per-run agents, queue, and graph construction."""
 
-    def __init__(self, app: AppContext, limit: int) -> None:
+    def __init__(
+        self,
+        app: AppContext,
+        limit: int,
+        *,
+        exclude_ids: Collection[int] = (),
+        attempted_ids: set[int] | None = None,
+    ) -> None:
         self.app = app
         self.limit = limit
-        self.queue = build_queue(app.database)
+        self.queue = build_queue(app.database, exclude_ids=exclude_ids)
+        self.attempted_ids = attempted_ids if attempted_ids is not None else set()
         self.max_attempts = app.config.agents.fixer.max_attempts
         self.verifier = VerifierAgent(app.llm, config=app.config.agents.verifier)
         self.recursion_limit = 100 + len(self.queue) * (2 * self.max_attempts + 4)
@@ -157,6 +175,7 @@ class _FixWorkflow:
 
         queued = state.queue[state.index]
         next_index = state.index + 1
+        self.attempted_ids.add(queued.id)
         issue = self._database.get_issue(queued.id)
         if issue is None:
             return {"index": next_index}
@@ -417,16 +436,35 @@ class _FixWorkflow:
         return graph
 
 
-def run_fix(app: AppContext, limit: int = 0) -> FixStats:
-    """Run the fix workflow and return its counters."""
-    workflow = _FixWorkflow(app, limit)
+def run_fix(
+    app: AppContext,
+    limit: int = 0,
+    *,
+    exclude_ids: Collection[int] = (),
+    attempted_ids: set[int] | None = None,
+    summarize: bool = True,
+) -> FixStats:
+    """Run the fix workflow and return its counters.
+
+    ``exclude_ids`` / ``attempted_ids`` let the combined workflow keep a
+    per-run "already attempted" set across multiple drain calls.
+    ``summarize=False`` suppresses the per-call fix summary so the combined
+    workflow can print one unified end-of-run line instead.
+    """
+    workflow = _FixWorkflow(
+        app,
+        limit,
+        exclude_ids=exclude_ids,
+        attempted_ids=attempted_ids,
+    )
     compiled = workflow.build_graph().compile()
     final = cast(
         dict[str, Any],
         compiled.invoke(FixState(), {"recursion_limit": workflow.recursion_limit}),
     )
     stats = cast(FixStats, final["stats"])
-    app.reporter.fix_summary(stats, remaining=app.database.count_issues())
+    if summarize:
+        app.reporter.fix_summary(stats, remaining=app.database.count_issues())
     return stats
 
 

@@ -37,6 +37,19 @@ class FixStats:
     skipped_stale: int = 0
 
 
+@dataclass
+class CombinedStats:
+    """Counters for one explore-and-fix run (one unified end-of-run line)."""
+
+    fixed: int = 0
+    failed: int = 0
+    skipped_stale: int = 0
+    remaining: int = 0
+    created: int = 0
+    pruned: int = 0
+    cycles: int = 0
+
+
 class Reporter:
     """Minimal deterministic stdout reporter (no logging, no timestamps)."""
 
@@ -91,5 +104,20 @@ class Reporter:
             f"{remaining} open issues"
         )
 
+    # -- explore-and-fix -----------------------------------------------
 
-__all__ = ["ExploreStats", "FixStats", "Reporter"]
+    def combined_summary(self, stats: CombinedStats) -> None:
+        """One unified end-of-run line for the combined workflow."""
+        self.message(
+            "explore-and-fix summary: "
+            f"{stats.fixed} fixed, "
+            f"{stats.failed} failed, "
+            f"{stats.skipped_stale} skipped-stale, "
+            f"{stats.created} created, "
+            f"{stats.remaining} remaining, "
+            f"{stats.pruned} pruned, "
+            f"{stats.cycles} cycle(s)"
+        )
+
+
+__all__ = ["CombinedStats", "ExploreStats", "FixStats", "Reporter"]

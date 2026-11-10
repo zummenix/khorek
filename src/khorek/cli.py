@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import httpx
@@ -16,6 +16,7 @@ from khorek.llm import LLMClient, ModelUnavailable
 from khorek.lock import LockError, LockHeld, acquire
 from khorek.report import Reporter
 from khorek.workflows.explore import run_explore
+from khorek.workflows.explore_and_fix import run_explore_and_fix
 from khorek.workflows.fix import run_fix
 
 # Exit codes are fixed by the prototype plan.
@@ -23,7 +24,8 @@ EXIT_OK = 0
 EXIT_ERROR = 1
 EXIT_FATAL = 2
 
-_NOT_IMPLEMENTED = "khorek {command}: not implemented yet"
+# A workflow body, executed with the open DB and lock: (app, limit, pruned) -> exit code.
+WorkflowBody = Callable[[AppContext, int, int], int]
 
 
 def _add_workflow_arguments(parser: argparse.ArgumentParser) -> None:
@@ -142,7 +144,20 @@ def _load_config_or_report(project_root: Path, args: argparse.Namespace) -> Conf
         return None
 
 
-def _run_explore(args: argparse.Namespace, transport: httpx.BaseTransport | None) -> int:
+def _run_workflow(
+    args: argparse.Namespace,
+    transport: httpx.BaseTransport | None,
+    *,
+    command: str,
+    require_verify: bool,
+    body: WorkflowBody,
+) -> int:
+    """Shared preamble/teardown for every workflow command.
+
+    Resolve the project, load and validate config, optionally require a
+    ``[[verify]]`` command, preflight the model, take the lock, open and
+    validate the DB, prune config drift, run *body*, then release everything.
+    """
     project_root = _resolve_project(args.path)
     if project_root is None:
         return EXIT_FATAL
@@ -150,61 +165,9 @@ def _run_explore(args: argparse.Namespace, transport: httpx.BaseTransport | None
     config = _load_config_or_report(project_root, args)
     if config is None:
         return EXIT_FATAL
-
-    llm = LLMClient(
-        config.llm,
-        transport=transport,
-        max_prompt_bytes=config.defaults.max_prompt_bytes,
-        max_tool_output_bytes=config.defaults.max_tool_output_bytes,
-    )
-    try:
-        try:
-            llm.preflight()
-        except ModelUnavailable as exc:
-            return _fail(str(exc))
-
-        db_path = _resolve_db_path(project_root, args.db)
-        try:
-            with acquire(db_path):
-                try:
-                    with Database(db_path, project_root) as database:
-                        reporter = Reporter()
-                        pruned = database.prune_drift([aspect.id for aspect in config.aspects])
-                        app = AppContext(
-                            project_root=project_root,
-                            config=config,
-                            database=database,
-                            llm=llm,
-                            reporter=reporter,
-                        )
-                        stats = run_explore(app, limit=args.limit)
-                        reporter.summary(
-                            stats,
-                            pruned=pruned,
-                            open_issues=database.count_issues(),
-                        )
-                        return EXIT_ERROR if stats.errored else EXIT_OK
-                except DatabaseError as exc:
-                    return _fail(str(exc))
-        except LockHeld as exc:
-            return _fail(str(exc))
-        except LockError as exc:
-            return _fail(str(exc))
-    finally:
-        llm.close()
-
-
-def _run_fix(args: argparse.Namespace, transport: httpx.BaseTransport | None) -> int:
-    project_root = _resolve_project(args.path)
-    if project_root is None:
-        return EXIT_FATAL
-
-    config = _load_config_or_report(project_root, args)
-    if config is None:
-        return EXIT_FATAL
-    if not config.verify:
+    if require_verify and not config.verify:
         print(
-            "khorek: fix requires at least one [[verify]] command in the config",
+            f"khorek: {command} requires at least one [[verify]] command in the config",
             file=sys.stderr,
         )
         return EXIT_FATAL
@@ -228,11 +191,6 @@ def _run_fix(args: argparse.Namespace, transport: httpx.BaseTransport | None) ->
                     with Database(db_path, project_root) as database:
                         reporter = Reporter()
                         pruned = database.prune_drift([aspect.id for aspect in config.aspects])
-                        if pruned:
-                            reporter.message(
-                                f"fix: pruned {pruned} issue/state row(s) "
-                                "from aspects no longer in the config"
-                            )
                         app = AppContext(
                             project_root=project_root,
                             config=config,
@@ -240,9 +198,7 @@ def _run_fix(args: argparse.Namespace, transport: httpx.BaseTransport | None) ->
                             llm=llm,
                             reporter=reporter,
                         )
-                        stats = run_fix(app, limit=args.limit)
-                        remaining = database.count_issues()
-                        return EXIT_ERROR if stats.failed or remaining else EXIT_OK
+                        return body(app, args.limit, pruned)
                 except DatabaseError as exc:
                     return _fail(str(exc))
         except LockHeld as exc:
@@ -251,6 +207,58 @@ def _run_fix(args: argparse.Namespace, transport: httpx.BaseTransport | None) ->
             return _fail(str(exc))
     finally:
         llm.close()
+
+
+def _run_explore(args: argparse.Namespace, transport: httpx.BaseTransport | None) -> int:
+    def body(app: AppContext, limit: int, pruned: int) -> int:
+        stats = run_explore(app, limit=limit)
+        app.reporter.summary(
+            stats,
+            pruned=pruned,
+            open_issues=app.database.count_issues(),
+        )
+        return EXIT_ERROR if stats.errored else EXIT_OK
+
+    return _run_workflow(
+        args,
+        transport,
+        command="explore",
+        require_verify=False,
+        body=body,
+    )
+
+
+def _run_fix(args: argparse.Namespace, transport: httpx.BaseTransport | None) -> int:
+    def body(app: AppContext, limit: int, pruned: int) -> int:
+        if pruned:
+            app.reporter.message(
+                f"fix: pruned {pruned} issue/state row(s) from aspects no longer in the config"
+            )
+        stats = run_fix(app, limit=limit)
+        remaining = app.database.count_issues()
+        return EXIT_ERROR if stats.failed or remaining else EXIT_OK
+
+    return _run_workflow(
+        args,
+        transport,
+        command="fix",
+        require_verify=True,
+        body=body,
+    )
+
+
+def _run_explore_and_fix(args: argparse.Namespace, transport: httpx.BaseTransport | None) -> int:
+    def body(app: AppContext, limit: int, pruned: int) -> int:
+        stats = run_explore_and_fix(app, limit=limit, pruned=pruned)
+        return EXIT_ERROR if stats.remaining else EXIT_OK
+
+    return _run_workflow(
+        args,
+        transport,
+        command="explore-and-fix",
+        require_verify=True,
+        body=body,
+    )
 
 
 def _run_reset(args: argparse.Namespace) -> int:
@@ -307,10 +315,12 @@ def main(
         return _run_explore(args, transport)
     if args.command == "fix":
         return _run_fix(args, transport)
+    if args.command == "explore-and-fix":
+        return _run_explore_and_fix(args, transport)
     if args.command == "reset":
         return _run_reset(args)
 
-    print(_NOT_IMPLEMENTED.format(command=args.command), file=sys.stderr)
+    print(f"khorek: unknown command: {args.command}", file=sys.stderr)
     return EXIT_FATAL
 
 
