@@ -108,7 +108,7 @@ class FixerAgentConfig(_StrictModel):
 
 
 class VerifierAgentConfig(_StrictModel):
-    """Verifier settings (consumed by Phase 3)."""
+    """Verifier settings (used by the fix workflow)."""
 
     prompt: str = ""
     think: bool | None = None  # None = inherit [llm].think

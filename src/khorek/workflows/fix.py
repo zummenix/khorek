@@ -4,7 +4,7 @@ Implemented as a LangGraph ``StateGraph`` with plain function nodes and
 conditional edges (``select -> fix -> verify -> success|fail -> select``).  No
 checkpointer: the SQLite database is the source of truth.
 
-Queues and round semantics follow the plan exactly:
+Queues and round semantics are fixed as follows:
 
 * the queue is ordered by ``retry_count ASC, severity DESC, created_at ASC``
   and computed once per run;

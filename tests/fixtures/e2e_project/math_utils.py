@@ -1,4 +1,4 @@
-"""Arithmetic helpers for the khorek Phase 4 real-LLM end-to-end fixture."""
+"""Arithmetic helpers for the khorek real-LLM end-to-end fixture."""
 
 
 # Subtracts b from a.

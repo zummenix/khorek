@@ -1,6 +1,6 @@
 """Explore-and-fix workflow: drain the fix queue, explore, repeat.
 
-The plan's loop, implemented literally:
+The loop, implemented literally:
 
 ```
 attempted = set()

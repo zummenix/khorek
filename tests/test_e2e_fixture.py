@@ -1,4 +1,4 @@
-"""The Phase 4 e2e fixture's deterministic verifier behaves as advertised."""
+"""The e2e fixture's deterministic verifier behaves as advertised."""
 
 from __future__ import annotations
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic comment/code consistency checker for the Phase 4 e2e fixture.
+"""Deterministic comment/code consistency checker for the khorek e2e fixture.
 
 Run from the fixture root (``python3 verify_comments.py``).  For every function
 that adds or subtracts, the comments attached to it (the contiguous comment

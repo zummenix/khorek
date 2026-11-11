@@ -1,6 +1,6 @@
 """Fixer agent: apply an exact-match edit (or a file write) for one issue.
 
-The Fixer's tool set is deliberately narrow (plan: ``read_file``, ``edit_file``,
+The Fixer's tool set is deliberately narrow (``read_file``, ``edit_file``,
 ``write_file``, terminal ``report_fix_result``).  Both mutating tools capture
 the file in the attempt's :class:`~khorek.snapshots.Snapshotter` before their
 first write, so a failed attempt can be rolled back completely.

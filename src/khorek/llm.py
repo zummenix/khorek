@@ -1,7 +1,7 @@
 """OpenAI-compatible LLM client and the bounded tool-calling agent loop.
 
 Every agent is the same loop: send messages, receive tool calls, run them,
-repeat.  The loop enforces the plan's safety rails:
+repeat.  The loop enforces these safety rails:
 
 * forced tool calls (``tool_choice: "required"``) for structured agents;
 * per-call timeouts and a hard prompt-size budget;

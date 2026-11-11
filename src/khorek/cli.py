@@ -21,7 +21,7 @@ from khorek.workflows.explore import run_explore
 from khorek.workflows.explore_and_fix import run_explore_and_fix
 from khorek.workflows.fix import run_fix
 
-# Exit codes are fixed by the prototype plan.
+# Exit codes are fixed: 0 for success, 1 for a workflow error, 2 for a fatal error.
 EXIT_OK = 0
 EXIT_ERROR = 1
 EXIT_FATAL = 2

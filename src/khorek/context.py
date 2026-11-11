@@ -1,6 +1,6 @@
 """Shared run context passed to workflows.
 
-Phases 3-4 build on the same seam: a resolved project root, validated config,
+Both workflows build on the same seam: a resolved project root, validated config,
 open database, configured LLM client, and reporter.
 """
 

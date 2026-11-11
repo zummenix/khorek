@@ -1,6 +1,6 @@
 """File enumeration, hashing, and safe reads for khorek.
 
-Enumeration follows the plan: ``files`` entries may be globs, directories, or
+Enumeration rules: ``files`` entries may be globs, directories, or
 explicit paths; root ``.gitignore`` patterns are honoured with ``pathspec``;
 the usual build/tooling directories are always skipped; binary and oversized
 files are dropped; results are sorted, deduplicated, relative to *root*.
