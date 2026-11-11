@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from khorek.agents.explorer import ExplorerAgent, ask_explorer_tool
 from khorek.agents.tools import read_only_tools
 from khorek.config import AspectAgentConfig, AspectConfig, DefaultsConfig
+from khorek.content import format_file_lines
 from khorek.llm import LLMClient, Tool
 from khorek.prompts import default_prompt
 
@@ -124,11 +125,7 @@ class AspectAgent:
         user_prompt = (
             f"Aspect: {aspect.id}\n"
             f"Task: {aspect.prompt}\n\n"
-            f"File under review: {path}\n"
-            f"Line count: {_line_count(content)}\n\n"
-            f"----- BEGIN FILE {path} -----\n"
-            f"{content}\n"
-            f"----- END FILE {path} -----\n\n"
+            f"{format_file_lines(path, content, offset=None, limit=None)}\n\n"
             "Report your findings for this aspect with report_issues. If there is "
             "nothing to report, call it with an empty list."
         )

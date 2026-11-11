@@ -32,7 +32,9 @@ specific kind of issue (the "aspect") and report what you find.
 - `grep(pattern, path?, glob?)` — search project files with a regular
   expression; results include 1-based line numbers.
 - `list_files(path?, pattern?)` — list project files.
-- `read_file(path)` — read another project file (project-relative path).
+- `read_file(path, offset?, limit?)` — read another project file (project-relative
+  path). *offset* is the 1-based first line to read and *limit* is the maximum
+  number of lines; both are optional and default to the whole file.
 - `report_issues(issues)` — **required final tool call**. It accepts
   `issues: [{description, line_start, line_end, severity}]`.
 

@@ -10,6 +10,7 @@ from typing import Any
 
 from pathspec import PathSpec
 
+from khorek.content import format_file_lines
 from khorek.files import PathEscapeError, is_binary, read_text_file, resolve_within_root, walk_files
 from khorek.llm import Tool, ToolValidationError
 
@@ -33,6 +34,15 @@ def _optional_string_argument(arguments: dict[str, Any], name: str) -> str | Non
     return value
 
 
+def _optional_int_argument(arguments: dict[str, Any], name: str) -> int | None:
+    value = arguments.get(name)
+    if value is None:
+        return None
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ToolValidationError(f"argument {name!r} must be an integer when given")
+    return value
+
+
 def _resolve_file(root: Path, root_real: Path, raw: str) -> tuple[Path, str]:
     try:
         resolved = resolve_within_root(root, raw)
@@ -51,28 +61,35 @@ def read_file_tool(root: Path, max_file_bytes: int) -> Tool:
     """Create the ``read_file`` tool."""
     root_real = Path(os.path.realpath(root))
 
-    def handler(arguments: dict[str, Any]) -> dict[str, Any]:
+    def handler(arguments: dict[str, Any]) -> str:
         raw = _string_argument(arguments, "path")
+        offset = _optional_int_argument(arguments, "offset")
+        limit = _optional_int_argument(arguments, "limit")
         resolved, relative = _resolve_file(root, root_real, raw)
         try:
             if resolved.stat().st_size > max_file_bytes:
                 raise ToolValidationError(
                     f"file is larger than max_file_bytes={max_file_bytes}: {relative}"
                 )
-            content = read_text_file(resolved)
+            content = format_file_lines(
+                relative, read_text_file(resolved), offset=offset, limit=limit
+            )
         except OSError as exc:
             raise ToolValidationError(f"cannot read {relative}: {exc}") from exc
-        return {
-            "path": relative,
-            "line_count": max(1, len(content.splitlines())),
-            "content": content,
-        }
+        except (TypeError, ValueError) as exc:
+            raise ToolValidationError(
+                f"invalid offset={offset!r} or limit={limit!r}: {exc}"
+            ) from exc
+        return content
 
     return Tool(
         name="read_file",
         description=(
             "Read a UTF-8 text file from the project. The path must be relative to "
-            "the project root. Returns the whole content and its line count."
+            "the project root. Reads lines *offset* through *offset+limit-1* "
+            "(1-based); both are optional and default to the whole file. The "
+            "result includes the line range, the number of lines shown, and how "
+            "many lines remain unread."
         ),
         parameters={
             "type": "object",
@@ -80,7 +97,16 @@ def read_file_tool(root: Path, max_file_bytes: int) -> Tool:
                 "path": {
                     "type": "string",
                     "description": "Project-relative path of the file to read.",
-                }
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "1-based first line to read (default 1).",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of lines to read (default: all "
+                    "lines from offset).",
+                },
             },
             "required": ["path"],
             "additionalProperties": False,

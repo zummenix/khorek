@@ -3,9 +3,12 @@
 Enumeration follows the plan: ``files`` entries may be globs, directories, or
 explicit paths; root ``.gitignore`` patterns are honoured with ``pathspec``;
 the usual build/tooling directories are always skipped; binary and oversized
-files are dropped; results are sorted, deduplicated, project-root-relative
-paths.  Symlinks may not escape the project root and directory walks are
-cycle-safe.
+files are dropped; results are sorted, deduplicated, relative to *root*.
+Symlinks may not escape the project root and directory walks are cycle-safe.
+
+The module also exports write-safety helpers (:func:`resolve_for_write`,
+:func:`resolve_within_root`) and file reading helpers (:func:`sha256_file`,
+:func:`read_text_file`, :func:`is_binary`).
 """
 
 from __future__ import annotations

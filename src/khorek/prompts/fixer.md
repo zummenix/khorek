@@ -22,7 +22,9 @@ with the smallest correct change, and then report the result.
 - `write_file(path, content)` overwrites or creates a whole UTF-8 file. Prefer
   `edit_file` for small changes; use `write_file` only when replacing most of
   the file is genuinely simpler.
-- `read_file(path)` reads a project file when you need a fresh copy.
+- `read_file(path, offset?, limit?)` reads a project file when you need a fresh
+  copy. *offset* is the 1-based first line to read and *limit* is the maximum
+  number of lines; both are optional and default to the whole file.
 - On a retry you may be given the previous verification failure. Address that
   failure specifically.
 - Finish by calling `report_fix_result(fixed, summary)`. Call `fixed=true` only
@@ -36,7 +38,9 @@ with the smallest correct change, and then report the result.
 
 - `edit_file(path, search, replace)` — exact, single-match SEARCH/REPLACE.
 - `write_file(path, content)` — write a whole file.
-- `read_file(path)` — read a project file.
+- `read_file(path, offset?, limit?)` — read a project file. *offset* is the
+  1-based first line to read and *limit* is the maximum number of lines; both
+  are optional and default to the whole file.
 - `report_fix_result(fixed, summary)` — **required final tool call**.
 
 Text-only replies are rejected and you will be asked again.
