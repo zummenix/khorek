@@ -11,10 +11,10 @@ from khorek.agents.fixer import (
     FixerAgent,
     FixOutcome,
     edit_file_tool,
-    reconstruct_snippet,
     write_file_tool,
 )
 from khorek.config import DefaultsConfig, FixerAgentConfig, LLMConfig
+from khorek.content import format_file_lines
 from khorek.db import Issue
 from khorek.llm import LLMClient, Tool, ToolValidationError
 from khorek.snapshots import Snapshotter
@@ -132,14 +132,6 @@ def test_edit_file_rejects_escaping_paths(tmp_path: Path) -> None:
         handler(tool)({"path": str(outside / "a.py"), "search": "x", "replace": "y"})
 
 
-def test_reconstruct_snippet_clamps_to_current_content() -> None:
-    content = "one\ntwo\nthree\n"
-    assert reconstruct_snippet(content, 2, 2) == "two"
-    assert reconstruct_snippet(content, -5, 99) == "one\ntwo\nthree"
-    assert reconstruct_snippet(content, 3, 1) == "three"
-    assert reconstruct_snippet("", 1, 2) == ""
-
-
 def _issue(line_start: int = 2, line_end: int = 2) -> Issue:
     return Issue(
         id=7,
@@ -195,13 +187,12 @@ def test_fixer_prompt_has_issue_file_snippet_and_previous_failure(tmp_path: Path
     request = fake.chat_requests[0]
     user_prompt = request["messages"][1]["content"]
     assert "the comment is inconsistent" in user_prompt
-    assert "----- BEGIN FILE src/a.py -----\none\ntwo\nthree\n" in user_prompt
-    assert "----- END FILE src/a.py -----" in user_prompt
-    assert "----- BEGIN SNIPPET src/a.py:2-2 -----\ntwo\n----- END SNIPPET src/a.py:2-2 -----" in (
-        user_prompt
-    )
-    assert "verification failed: expected TWO" in user_prompt
     assert "Current line count: 3" in user_prompt
+    snippet = format_file_lines("src/a.py", "one\ntwo\nthree\n", offset=2, limit=1)
+    assert snippet in user_prompt
+    full = format_file_lines("src/a.py", "one\ntwo\nthree\n", offset=None, limit=None)
+    assert full in user_prompt
+    assert "verification failed: expected TWO" in user_prompt
 
     tool_names = {definition["function"]["name"] for definition in request["tools"]}
     assert tool_names == FIXER_TOOL_NAMES

@@ -20,6 +20,7 @@ from pydantic import BaseModel, ConfigDict
 
 from khorek.agents.tools import read_file_tool
 from khorek.config import DefaultsConfig, FixerAgentConfig
+from khorek.content import format_file_lines
 from khorek.db import Issue
 from khorek.files import (
     PathEscapeError,
@@ -79,6 +80,8 @@ def edit_file_tool(root: Path, snapshotter: Snapshotter) -> Tool:
         replace = _string_argument(arguments, "replace")
         if not search:
             raise ToolValidationError("search text must not be empty")
+        if search == replace:
+            raise ToolValidationError("search text and replace text are exactly the same")
         resolved, relative = _resolve_existing(root, raw)
         try:
             content = read_text_file(resolved)
@@ -206,17 +209,6 @@ def report_fix_result_tool() -> Tool:
     )
 
 
-def reconstruct_snippet(content: str, line_start: int, line_end: int) -> str:
-    """Rebuild the issue snippet from the current content's line range."""
-    lines = content.splitlines()
-    if not lines:
-        return ""
-    count = len(lines)
-    start = min(max(1, line_start), count)
-    end = min(max(line_end, start), count)
-    return "\n".join(lines[start - 1 : end])
-
-
 def _build_user_prompt(
     issue: Issue,
     path: str,
@@ -227,7 +219,6 @@ def _build_user_prompt(
     count = max(1, len(lines))
     start = min(max(1, issue.line_start), count)
     end = min(max(issue.line_end, start), count)
-    snippet = reconstruct_snippet(content, issue.line_start, issue.line_end)
 
     parts = [
         f"Issue #{issue.id} (aspect: {issue.aspect_id}, severity: {issue.severity})",
@@ -238,14 +229,10 @@ def _build_user_prompt(
         issue.description.strip(),
         "",
         f"Issue line range: {start}-{end}; snippet reconstructed from the current file:",
-        f"----- BEGIN SNIPPET {path}:{start}-{end} -----",
-        snippet,
-        f"----- END SNIPPET {path}:{start}-{end} -----",
+        format_file_lines(path, content, offset=start, limit=end - start + 1),
         "",
         "Current file contents:",
-        f"----- BEGIN FILE {path} -----",
-        content,
-        f"----- END FILE {path} -----",
+        format_file_lines(path, content, offset=None, limit=None),
         "",
     ]
     if previous_failure:
@@ -322,7 +309,6 @@ __all__ = [
     "FixReport",
     "FixerAgent",
     "edit_file_tool",
-    "reconstruct_snippet",
     "report_fix_result_tool",
     "write_file_tool",
 ]
