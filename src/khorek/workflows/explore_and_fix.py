@@ -4,7 +4,10 @@
 of these happen, in order:
 
 * the attempt budget is exhausted (``--limit`` issues attempted);
-* the creation budget is exhausted (``--limit`` issues created);
+* the creation budget is exhausted (``--limit`` issues created); with the
+  default ``limit=0`` (unlimited) this check is skipped, so the run keeps
+  draining until explore creates zero issues (or the ``max_cycles`` guard
+  fires);
 * explore creates zero issues (no progress);
 * ``max_cycles`` cycles elapse without converging.
 
