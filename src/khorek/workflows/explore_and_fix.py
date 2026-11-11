@@ -1,5 +1,17 @@
 """Explore-and-fix workflow: drain the fix queue, explore, repeat.
 
+``--limit`` is a *cap*, not a guarantee: the loop stops early as soon as any
+of these happen, in order:
+
+* the attempt budget is exhausted (``--limit`` issues attempted);
+* the creation budget is exhausted (``--limit`` issues created);
+* explore creates zero issues (no progress);
+* ``max_cycles`` cycles elapse without converging.
+
+So a run may end having fixed far fewer than ``--limit`` issues, or having
+explored only once.  The loop is a bounded search, not a guaranteed
+drain-to-zero pass.
+
 The loop, implemented literally:
 
 ```
@@ -14,7 +26,7 @@ loop:
   if cycles >= max_cycles: warn and stop
 ```
 
-``--limit`` applies independently to the issues *attempted* and the issues
+The budget applies independently to the issues *attempted* and the issues
 *created*: each drain gets the remaining attempt budget and each explore gets
 the remaining creation budget.  Exploration stops once it has created its
 budget; the loop then drains those freshly created issues (their attempts use
