@@ -5,7 +5,7 @@ repeat.  The loop enforces these safety rails:
 
 * forced tool calls (``tool_choice: "required"``) for structured agents;
 * per-call timeouts and a hard prompt-size budget;
-* repeat-call detection (twice in a row, or three times overall);
+* repeat-call detection (twice in a row, or a third occurrence overall);
 * one repair attempt for malformed tool arguments;
 * a nudge (then abort) when a tool-required agent replies with text;
 * tool-result truncation with a ``truncated`` marker.
