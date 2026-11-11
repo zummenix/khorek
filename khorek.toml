@@ -1,10 +1,6 @@
 [llm]
 base_url = "http://127.0.0.1:11434/v1"
-model = "mimo-v2.6:9b-mxfp8"
-# mimo-v2.6 is a thinking model. Per-agent overrides below turn thinking off
-# for the structured agents that review/edit whole files: with long inputs it
-# can ruminate for thousands of tokens and never emit the forced tool call
-# (observed as 600 s call timeouts). The free-text explorer inherits this value.
+model = "qwen3.8:27b-mxfp8"
 think = true
 temperature = 0.2
 call_timeout = 600

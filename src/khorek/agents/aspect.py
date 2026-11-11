@@ -50,8 +50,7 @@ def _inline_refs(node: Any, defs: dict[str, Any]) -> Any:
     """Inline JSON-schema ``$ref``s.
 
     Pydantic nests named models under ``$defs`` and refers to them with
-    ``$ref``.  Small local models (the prototype target) often mishandle that:
-    with the nested schema, ``mimo-v2.6`` called ``report_issues`` with ``{}``.
+    ``$ref``.  Small local models (the prototype target) often mishandle that.
     Inlining keeps the exact field/enum constraints in a flat schema the model
     can follow.
     """

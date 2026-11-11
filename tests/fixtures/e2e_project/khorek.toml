@@ -2,7 +2,7 @@
 # is a self-contained project so the e2e never explores src/.
 [llm]
 base_url = "http://127.0.0.1:11434/v1"
-model = "mimo-v2.6:9b-mxfp8"
+model = "qwen3.8:27b-mxfp8"
 think = true
 temperature = 0.0
 call_timeout = 600

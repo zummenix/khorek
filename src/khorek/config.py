@@ -58,8 +58,7 @@ class LLMConfig(_StrictModel):
     max_tokens: int = Field(default=DEFAULT_MAX_TOKENS, ge=0)
     # Model-defined level ("none", "low", ...), passed through when non-empty.
     # ``think = false`` is folded into ``reasoning_effort = "none"`` for models
-    # (such as mimo-v2.6 on Ollama) whose OpenAI endpoint only supports a
-    # boolean thinking switch.
+    # whose OpenAI endpoint only supports a boolean thinking switch.
     reasoning_effort: str | None = None
 
 

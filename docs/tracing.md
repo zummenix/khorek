@@ -109,16 +109,9 @@ The UI shows:
    server log or run the same request with a small `max_tokens` to see the
    truncated thinking.
 
-## Why this was added (dogfood finding)
+## Output cap and per-agent thinking
 
-With `mimo-v2.6:9b-mxfp8` and `think = true`, the aspect agent reviewing
-`src/khorek/agents/aspect.py` spent the full 600 s call timeout in a repeating
-"let me look more carefully…" reasoning loop and never emitted the forced
-`report_issues` call.  A capped probe (`max_tokens = 512`) returned after 17 s
-with `finish_reason = length` and 512 tokens of nearly identical reasoning.
-The same request with thinking disabled returned in 9 s with a tool call.
-
-The harness therefore supports both `max_tokens` (hard output cap; Ollama maps
+The harness supports both `max_tokens` (hard output cap; Ollama maps
 it to `num_predict`) and per-agent thinking control:
 
 ```toml
