@@ -45,7 +45,7 @@ class ExplorerAgent:
 
 
 def ask_explorer_tool(explorer: ExplorerAgent, max_handoffs: int) -> Tool:
-    """Create the ``ask_explorer`` tool with a per-review hand-off budget."""
+    """Create the ``ask_explorer`` tool with a per-aspect-run hand-off budget."""
     handoffs = 0
 
     def handler(arguments: dict[str, Any]) -> dict[str, Any]:
