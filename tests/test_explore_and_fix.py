@@ -96,6 +96,30 @@ def test_queue_is_drained_before_exploring(tmp_path: Path, capsys) -> None:
     assert "explore-and-fix summary:" in output
 
 
+def test_fix_block_streams_and_unified_summary_stays_last(tmp_path: Path, capsys) -> None:
+    project = make_project(
+        tmp_path / "project",
+        files={"src/a.py": "value = 1\n", "src/b.py": "b = 1\n"},
+        verify=TRUE_VERIFY,
+    )
+    seed_state(project, outcome="issues")
+    issue_id = seed_issue(project)
+    fake = FakeModel([edit("value = 1", "value = 2"), fix_report("fixed it"), report()])
+
+    assert run_cli(fake, *explore_and_fix_args(project)) == 0
+
+    output = capsys.readouterr().out
+    assert (
+        f"fix #{issue_id} comments src/a.py: fixed\n"
+        "  problem:\n"
+        "    the comment is inconsistent\n"
+        "  fix:\n"
+        "    fixed it\n"
+    ) in output
+    last = [line for line in output.splitlines() if line]
+    assert last and last[-1].startswith("explore-and-fix summary:")
+
+
 def test_failed_issue_is_not_reattempted_and_remains_open(tmp_path: Path, capsys) -> None:
     project = make_project(
         tmp_path / "project",

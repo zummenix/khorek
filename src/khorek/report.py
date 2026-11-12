@@ -6,6 +6,8 @@ import sys
 from dataclasses import dataclass
 from typing import TextIO
 
+from khorek.db import Issue
+
 
 @dataclass
 class ExploreStats:
@@ -50,6 +52,18 @@ class CombinedStats:
     cycles: int = 0
 
 
+def _indented(text: str) -> list[str]:
+    """Re-indent every non-blank line of *text* to exactly four spaces.
+
+    Internal blank lines are emitted as blank lines (no indent).
+    """
+    lines: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        lines.append(f"    {stripped}" if stripped else "")
+    return lines
+
+
 class Reporter:
     """Minimal deterministic stdout reporter (no logging, no timestamps)."""
 
@@ -87,6 +101,25 @@ class Reporter:
 
     def fix_finished(self, issue_id: int, aspect_id: str, path: str) -> None:
         self.message(f"fix #{issue_id} {aspect_id} {path}: fixed")
+
+    def fix_report(self, issue: Issue, fix_summary: str) -> None:
+        """Print the per-issue problem/fix block after a successful fix.
+
+        Each field is stripped first; an empty field omits its label and
+        content, and when both fields are empty nothing is printed (the bare
+        ``fix_finished`` line stands on its own).
+        """
+        lines: list[str] = []
+        problem = issue.description.strip()
+        if problem:
+            lines.append("  problem:")
+            lines.extend(_indented(problem))
+        summary = fix_summary.strip()
+        if summary:
+            lines.append("  fix:")
+            lines.extend(_indented(summary))
+        if lines:
+            self.message("\n".join(lines))
 
     def fix_failed(self, issue_id: int, aspect_id: str, path: str, error: str) -> None:
         self.message(f"fix #{issue_id} {aspect_id} {path}: failed: {error}")

@@ -356,6 +356,7 @@ class _FixWorkflow:
                     database.upsert_state(issue.aspect_id, issue.path, state.new_sha, "clean")
 
         self.app.reporter.fix_finished(issue.id, issue.aspect_id, issue.path)
+        self.app.reporter.fix_report(issue, state.fix_summary)
         return {
             "stats": replace(state.stats, fixed=state.stats.fixed + 1),
             **self._reset_issue_fields(),

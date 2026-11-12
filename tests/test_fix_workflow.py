@@ -79,6 +79,115 @@ def test_successful_fix_marks_pair_clean_with_new_sha(tmp_path: Path, capsys) ->
     assert "1 attempted, 1 fixed, 0 failed, 0 skipped-stale, 0 open issues" in output
 
 
+def test_successful_fix_prints_problem_and_fix_block(tmp_path: Path, capsys) -> None:
+    project = make_project(
+        tmp_path / "project",
+        files={"src/a.py": "# wrong\nvalue = 1\n"},
+        verify=TRUE_VERIFY,
+    )
+    seed_state(project, outcome="issues")
+    seed_issue(project, description="comment contradicts the code", line_start=1, line_end=1)
+    fake = FakeModel([edit("# wrong", "# right"), fix_report("corrected the comment")])
+
+    assert run_cli(fake, *fix_args(project)) == 0
+
+    output = capsys.readouterr().out
+    assert (
+        "fix #1 comments src/a.py: fixed\n"
+        "  problem:\n"
+        "    comment contradicts the code\n"
+        "  fix:\n"
+        "    corrected the comment\n"
+    ) in output
+
+
+def test_fix_block_reindents_multiline_content(tmp_path: Path, capsys) -> None:
+    project = make_project(
+        tmp_path / "project",
+        files={"src/a.py": "value = 1\n"},
+        verify=TRUE_VERIFY,
+    )
+    seed_state(project, outcome="issues")
+    seed_issue(
+        project,
+        description="the comment says:\n\n        value is one\nbut the code says two",
+    )
+    fake = FakeModel(
+        [
+            edit("value = 1", "value = 2"),
+            fix_report("renamed the variable\nand updated the call site"),
+        ]
+    )
+
+    assert run_cli(fake, *fix_args(project)) == 0
+
+    output = capsys.readouterr().out
+    assert (
+        "  problem:\n"
+        "    the comment says:\n"
+        "\n"
+        "    value is one\n"
+        "    but the code says two\n"
+        "  fix:\n"
+        "    renamed the variable\n"
+        "    and updated the call site\n"
+    ) in output
+
+
+def test_empty_fix_summary_prints_problem_block_only(tmp_path: Path, capsys) -> None:
+    project = make_project(
+        tmp_path / "project",
+        files={"src/a.py": "value = 1\n"},
+        verify=TRUE_VERIFY,
+    )
+    seed_state(project, outcome="issues")
+    seed_issue(project, description="the comment is inconsistent")
+    fake = FakeModel([edit("value = 1", "value = 2"), fix_report("")])
+
+    assert run_cli(fake, *fix_args(project)) == 0
+
+    output = capsys.readouterr().out
+    assert (
+        "fix #1 comments src/a.py: fixed\n  problem:\n    the comment is inconsistent\n"
+    ) in output
+    assert "  fix:" not in output
+
+
+def test_empty_description_prints_fix_block_only(tmp_path: Path, capsys) -> None:
+    project = make_project(
+        tmp_path / "project",
+        files={"src/a.py": "value = 1\n"},
+        verify=TRUE_VERIFY,
+    )
+    seed_state(project, outcome="issues")
+    seed_issue(project, description="")
+    fake = FakeModel([edit("value = 1", "value = 2"), fix_report("applied the fix")])
+
+    assert run_cli(fake, *fix_args(project)) == 0
+
+    output = capsys.readouterr().out
+    assert ("fix #1 comments src/a.py: fixed\n  fix:\n    applied the fix\n") in output
+    assert "  problem:" not in output
+
+
+def test_both_fields_empty_print_no_report_block(tmp_path: Path, capsys) -> None:
+    project = make_project(
+        tmp_path / "project",
+        files={"src/a.py": "value = 1\n"},
+        verify=TRUE_VERIFY,
+    )
+    seed_state(project, outcome="issues")
+    seed_issue(project, description="")
+    fake = FakeModel([edit("value = 1", "value = 2"), fix_report("")])
+
+    assert run_cli(fake, *fix_args(project)) == 0
+
+    output = capsys.readouterr().out
+    assert "fix #1 comments src/a.py: fixed\n" in output
+    assert "  problem:" not in output
+    assert "  fix:" not in output
+
+
 def test_verification_failure_feeds_summary_into_next_round(tmp_path: Path, capsys) -> None:
     project = make_project(
         tmp_path / "project",
@@ -193,6 +302,23 @@ def test_stale_hash_issue_is_deleted_and_counted(tmp_path: Path, capsys) -> None
     output = capsys.readouterr().out
     assert "skipped (stale hash)" in output
     assert "1 attempted, 0 fixed, 0 failed, 1 skipped-stale, 0 open issues" in output
+
+
+def test_stale_skip_prints_no_report_block(tmp_path: Path, capsys) -> None:
+    project = make_project(
+        tmp_path / "project",
+        files={"src/a.py": "value = 1\n"},
+        verify=TRUE_VERIFY,
+    )
+    seed_issue(project, sha256="stale-hash")
+    fake = FakeModel([])
+
+    assert run_cli(fake, *fix_args(project)) == 0
+
+    output = capsys.readouterr().out
+    assert "fix #1 comments src/a.py: skipped (stale hash)" in output
+    assert "  problem:" not in output
+    assert "  fix:" not in output
 
 
 def test_fix_touching_a_second_file_is_fully_restored(tmp_path: Path, capsys) -> None:
@@ -363,6 +489,24 @@ def test_fixed_false_ends_attempts_without_verification(tmp_path: Path, capsys) 
     assert stored[0].retry_count == 1
     assert stored[0].last_error == "cannot fix this"
     assert "0 fixed, 1 failed" in capsys.readouterr().out
+
+
+def test_failed_fix_prints_no_report_block(tmp_path: Path, capsys) -> None:
+    project = make_project(
+        tmp_path / "project",
+        files={"src/a.py": "value = 1\n"},
+        verify=TRUE_VERIFY,
+    )
+    seed_state(project, outcome="issues")
+    seed_issue(project)
+    fake = FakeModel([fix_report(fixed=False, summary="cannot fix this")])
+
+    assert run_cli(fake, *fix_args(project)) == 1
+
+    output = capsys.readouterr().out
+    assert "fix #1 comments src/a.py: failed: cannot fix this" in output
+    assert "  problem:" not in output
+    assert "  fix:" not in output
 
 
 def test_fixer_agent_error_ends_attempts_without_verification(tmp_path: Path, capsys) -> None:
