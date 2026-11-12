@@ -269,6 +269,21 @@ def run_cli(fake: FakeModel, *arguments: str | Path) -> int:
     return main([str(argument) for argument in arguments], transport=fake.transport)
 
 
+@pytest.fixture(autouse=True)
+def trace_viewer_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[tuple[Path, dict[str, Any]]]:
+    """Keep tests from starting a real trace viewer; records start attempts."""
+    calls: list[tuple[Path, dict[str, Any]]] = []
+
+    def fake_start(root: Path, **kwargs: Any) -> None:
+        calls.append((Path(root), kwargs))
+        return None
+
+    monkeypatch.setattr("khorek.cli.start_viewer", fake_start)
+    return calls
+
+
 def explore_args(project: Project, *extra: str | Path) -> tuple[str | Path, ...]:
     """Standard ``explore`` arguments for a tmp project."""
     return (

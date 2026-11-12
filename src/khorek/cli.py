@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import shlex
 import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -17,6 +18,7 @@ from khorek.lock import LockError, LockHeld, acquire
 from khorek.report import Reporter
 from khorek.trace import TraceRecorder, trace_dir_for
 from khorek.trace_server import serve as serve_traces
+from khorek.trace_server import start_viewer, stop_viewer
 from khorek.workflows.explore import run_explore
 from khorek.workflows.explore_and_fix import run_explore_and_fix
 from khorek.workflows.fix import run_fix
@@ -125,6 +127,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="do not open a browser window",
     )
     traces.add_argument("--verbose", action="store_true", help="log HTTP requests")
+    traces.add_argument(
+        "--stop",
+        action="store_true",
+        help="stop a trace server left running by a workflow",
+    )
 
     reset = subparsers.add_parser(
         "reset",
@@ -269,6 +276,7 @@ def _run_workflow(
         tracer=tracer,
     )
     exit_code = EXIT_FATAL
+    viewer = None
     try:
         try:
             llm.preflight()
@@ -289,6 +297,13 @@ def _run_workflow(
                             reporter=reporter,
                             tracer=tracer,
                         )
+                        if tracer is not None:
+                            viewer = start_viewer(tracer.trace_root)
+                            if viewer is not None:
+                                print(
+                                    f"khorek traces: {viewer.url} ({viewer.root})",
+                                    flush=True,
+                                )
                         exit_code = body(app, args.limit, pruned)
                         return exit_code
                 except DatabaseError as exc:
@@ -305,6 +320,16 @@ def _run_workflow(
                 status="fatal" if exit_code == EXIT_FATAL else ("issues" if exit_code else "ok"),
             )
             print(f"trace: {tracer.run_dir}", flush=True)
+        if viewer is not None:
+            print(
+                f"khorek traces: still running at {viewer.url} (pid {viewer.pid})",
+                flush=True,
+            )
+            print(
+                f"khorek traces: stop it with `khorek traces --stop --trace-dir "
+                f"{shlex.quote(str(viewer.root))}` (or kill {viewer.pid})",
+                flush=True,
+            )
 
 
 def _run_explore(args: argparse.Namespace, transport: httpx.BaseTransport | None) -> int:
@@ -359,22 +384,31 @@ def _run_explore_and_fix(args: argparse.Namespace, transport: httpx.BaseTranspor
     )
 
 
+def _resolve_trace_root(project_root: Path, args: argparse.Namespace) -> Path:
+    """Resolve the trace directory the viewer command should use."""
+    if args.trace_dir is not None:
+        return Path(args.trace_dir).expanduser().resolve()
+    try:
+        config = load_config(project_root)
+    except ConfigError:
+        config = None
+    if config is not None and config.observe.directory.strip():
+        return Path(config.observe.directory).expanduser().resolve()
+    return trace_dir_for(_resolve_db_path(project_root, args.db))
+
+
 def _run_traces(args: argparse.Namespace) -> int:
     project_root = _resolve_project(args.path)
     if project_root is None:
         return EXIT_FATAL
-    if args.trace_dir is not None:
-        root = Path(args.trace_dir).expanduser().resolve()
-    else:
-        root = None
-        try:
-            config = load_config(project_root)
-        except ConfigError:
-            config = None
-        if config is not None and config.observe.directory.strip():
-            root = Path(config.observe.directory).expanduser().resolve()
-        if root is None:
-            root = trace_dir_for(_resolve_db_path(project_root, args.db))
+    root = _resolve_trace_root(project_root, args)
+    if args.stop:
+        info = stop_viewer(root)
+        if info is None:
+            print(f"khorek: no trace viewer running for {root}")
+        else:
+            print(f"khorek traces: stopped {info.url} (pid {info.pid})")
+        return EXIT_OK
     if not root.exists():
         print(
             f"khorek: no traces at {root}; run a workflow with --trace or "

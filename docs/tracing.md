@@ -42,8 +42,8 @@ Environment overrides: `KHOREK_TRACE=1|0` and `KHOREK_TRACE_DIR=/path`.  The
 
 Each run directory is JSON Lines so the file is valid after a crash or a
 `kill -9`.  Events are flushed after every write.  Every traced workflow prints
-`trace: <run-dir>` as its final stdout line, so the newest trace is easy to
-find.
+`trace: <run-dir>`, so the newest trace is easy to find, followed by a note
+that the trace viewer is still running after the workflow exits.
 
 ### Event kinds
 
@@ -64,11 +64,44 @@ OpenAI-compatible JSON body (or the body text when it could not be parsed).
 
 ## View it in a browser
 
+When tracing is enabled, a workflow automatically starts the viewer, opens it
+in the browser, and prints its address:
+
+```bash
+uv run khorek explore --limit 1 --trace
+# khorek traces: http://127.0.0.1:8765/ (~/.khorek/<slug>.db.traces)
+# ... workflow output ...
+# trace: ~/.khorek/<slug>.db.traces/<run-id>
+# khorek traces: still running at http://127.0.0.1:8765/ (pid 4242)
+# khorek traces: stop it with `khorek traces --stop --trace-dir ~/.khorek/<slug>.db.traces` (or kill 4242)
+```
+
+The viewer is a detached background process, so it outlives the workflow and
+the browser keeps showing live updates.  Stop it with the command the workflow
+printed (or a bare `khorek traces --stop` when the trace directory is the
+project's configured/default one):
+
+```bash
+uv run khorek traces --stop --trace-dir ~/.khorek/<slug>.db.traces
+```
+
+`khorek traces --stop` resolves the trace directory exactly like `khorek
+traces` (see below), sends `SIGTERM` to the recorded process, and exits 0 even
+when no viewer is running.
+
+`khorek traces` starts a viewer explicitly, for example while tracing is off
+or after the automatically started one was stopped:
+
 ```bash
 uv run khorek traces                        # serves <db>.traces on 127.0.0.1:8765
 uv run khorek traces --port 9000 --no-open
 uv run khorek traces --trace-dir ./traces   # serve an explicit directory
 ```
+
+If port 8765 is taken by another process, the automatic viewer retries on an
+ephemeral port and prints the actual address.  If a viewer is already running
+for the same trace directory, the workflow reuses it instead of starting a
+second one.
 
 The viewer is dependency-free (stdlib HTTP server + three static assets).  It
 binds to localhost because traces contain source code and model output.

@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 import threading
 import urllib.request
 from pathlib import Path
@@ -10,11 +13,13 @@ from typing import Any
 
 import httpx
 
+from khorek.lock import lock_path_for
 from khorek.trace import TraceRecorder, TraceStore, trace_dir_for
-from khorek.trace_server import TraceServer
+from khorek.trace_server import ServerInfo, TraceServer, start_viewer, stop_viewer
 from tests.conftest import (
     FakeModel,
     explore_args,
+    held_lock,
     make_project,
     run_cli,
     tool_message,
@@ -214,3 +219,174 @@ def test_traced_run_prints_the_trace_path(tmp_path: Path, capsys) -> None:
     output = capsys.readouterr().out
     assert "trace: " in output
     assert str(project.trace_root) in output
+
+
+def test_traced_workflow_announces_the_viewer_and_how_to_stop_it(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    project = make_project(tmp_path / "project", observe={"enabled": True})
+    url = "http://127.0.0.1:8765/"
+    info = ServerInfo(pid=4321, host="127.0.0.1", port=8765, url=url, root=project.trace_root)
+    calls: list[Path] = []
+
+    def fake_start(root: Path, **kwargs: Any) -> ServerInfo:
+        calls.append(root)
+        return info
+
+    monkeypatch.setattr("khorek.cli.start_viewer", fake_start)
+    fake = FakeModel([tool_message("report_issues", {"issues": []})])
+    assert run_cli(fake, *explore_args(project)) == 0
+
+    output = capsys.readouterr().out
+    assert calls == [project.trace_root]
+    assert f"khorek traces: {url}" in output
+    assert "still running" in output
+    assert "--stop" in output
+    assert "--trace-dir" in output
+
+
+def test_untraced_workflow_does_not_start_the_viewer(tmp_path: Path, trace_viewer_calls) -> None:
+    project = make_project(tmp_path / "project")
+    fake = FakeModel([tool_message("report_issues", {"issues": []})])
+    assert run_cli(fake, *explore_args(project)) == 0
+    assert trace_viewer_calls == []
+
+
+def test_workflow_failing_before_the_body_does_not_start_the_viewer(
+    tmp_path: Path, trace_viewer_calls
+) -> None:
+    project = make_project(tmp_path / "project", observe={"enabled": True})
+    fake = FakeModel([tool_message("report_issues", {"issues": []})])
+    with held_lock(lock_path_for(project.db_path)):
+        assert run_cli(fake, *explore_args(project)) == 2
+    assert trace_viewer_calls == []
+
+
+def test_start_viewer_reuses_a_running_server(tmp_path: Path, monkeypatch) -> None:
+    root = tmp_path / "traces"
+    root.mkdir()
+    server = TraceServer(("127.0.0.1", 0), TraceStore(root))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        info = ServerInfo(
+            pid=os.getpid(),
+            host="127.0.0.1",
+            port=port,
+            url=f"http://127.0.0.1:{port}/",
+            root=root,
+        )
+        (root / "server.pid").write_text(
+            json.dumps(
+                {
+                    "pid": info.pid,
+                    "host": info.host,
+                    "port": info.port,
+                    "url": info.url,
+                    "root": str(root),
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        def explode(*args: Any, **kwargs: Any) -> None:
+            raise AssertionError("start_viewer spawned a second server")
+
+        monkeypatch.setattr("khorek.trace_server.subprocess.Popen", explode)
+        assert start_viewer(root, open_browser=False) == info
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_start_and_stop_viewer_process(tmp_path: Path) -> None:
+    root = tmp_path / "traces"
+    root.mkdir()
+    info = start_viewer(root, port=0, open_browser=False, wait=15.0)
+    assert info is not None
+    try:
+        assert info.pid != os.getpid()
+        assert info.url.startswith("http://127.0.0.1:")
+        assert (root / "server.pid").is_file()
+        assert stop_viewer(root) is not None
+    finally:
+        stop_viewer(root)
+    assert not (root / "server.pid").exists()
+
+
+def test_stop_viewer_terminates_the_recorded_process(tmp_path: Path, monkeypatch) -> None:
+    root = tmp_path / "traces"
+    root.mkdir()
+    process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        (root / "server.pid").write_text(
+            json.dumps(
+                {
+                    "pid": process.pid,
+                    "host": "127.0.0.1",
+                    "port": 8765,
+                    "url": "http://127.0.0.1:8765/",
+                    "root": str(root),
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("khorek.trace_server._looks_like_viewer", lambda pid: True)
+        stopped = stop_viewer(root, wait=5.0)
+        assert stopped is not None
+        assert stopped.pid == process.pid
+        process.wait(timeout=5)
+        assert not (root / "server.pid").exists()
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+
+
+def test_traces_cli_stop_reports_stopped_server(tmp_path: Path, monkeypatch, capsys) -> None:
+    from khorek.cli import main
+
+    root = tmp_path / "traces"
+    project = make_project(tmp_path / "project", observe={"directory": str(root)})
+    info = ServerInfo(
+        pid=4321,
+        host="127.0.0.1",
+        port=8765,
+        url="http://127.0.0.1:8765/",
+        root=root,
+    )
+    calls: list[Path] = []
+
+    def fake_stop(resolved: Path) -> ServerInfo:
+        calls.append(resolved)
+        return info
+
+    monkeypatch.setattr("khorek.cli.stop_viewer", fake_stop)
+    assert main(["traces", "-p", str(project.root), "--stop"]) == 0
+    assert calls == [root.resolve()]
+    assert "stopped http://127.0.0.1:8765/" in capsys.readouterr().out
+
+
+def test_traces_cli_stop_without_a_server_is_ok(tmp_path: Path, monkeypatch, capsys) -> None:
+    from khorek.cli import main
+
+    project = make_project(tmp_path / "project")
+    monkeypatch.setattr("khorek.cli.stop_viewer", lambda root: None)
+    assert main(["traces", "-p", str(project.root), "--stop"]) == 0
+    assert "no trace viewer running" in capsys.readouterr().out
+
+
+def test_start_viewer_resolves_a_symlinked_root(tmp_path: Path) -> None:
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+    info = start_viewer(link, port=0, open_browser=False, wait=15.0)
+    assert info is not None
+    try:
+        assert info.root == real.resolve()
+        assert stop_viewer(link) is not None
+    finally:
+        stop_viewer(link)
