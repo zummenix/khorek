@@ -22,7 +22,7 @@ def _config() -> LLMConfig:
     return LLMConfig(
         base_url="http://model.test/v1",
         model="fake-model",
-        think=False,
+        reasoning_effort="none",
         temperature=0.0,
         call_timeout=5.0,
     )
@@ -317,7 +317,7 @@ def test_timeout_is_structured() -> None:
 
 def test_payload_caps_tokens_and_disables_thinking() -> None:
     fake = FakeModel([tool_message("report", {"value": "ok"})])
-    config = _config().model_copy(update={"think": False, "max_tokens": 123})
+    config = _config().model_copy(update={"max_tokens": 123})
     client = LLMClient(config, transport=fake.transport)
     _run(client)
     payload = fake.chat_requests[0]
@@ -328,7 +328,7 @@ def test_payload_caps_tokens_and_disables_thinking() -> None:
 
 def test_payload_passes_explicit_reasoning_effort() -> None:
     fake = FakeModel([tool_message("report", {"value": "ok"})])
-    config = _config().model_copy(update={"think": True, "reasoning_effort": "low"})
+    config = _config().model_copy(update={"reasoning_effort": "low"})
     client = LLMClient(config, transport=fake.transport)
     _run(client)
     assert fake.chat_requests[0]["reasoning_effort"] == "low"
@@ -359,9 +359,9 @@ def test_unknown_tool_repair_names_available_tools_and_no_shell() -> None:
     assert "bash" in repair["message"]
 
 
-def test_run_agent_think_override_wins_over_config() -> None:
+def test_run_agent_reasoning_effort_override_wins_over_config() -> None:
     fake = FakeModel([tool_message("report", {"value": "ok"})])
-    config = _config().model_copy(update={"think": True})
+    config = _config().model_copy(update={"reasoning_effort": "medium"})
     client = LLMClient(config, transport=fake.transport)
     client.run_agent(
         system_prompt="system",
@@ -370,14 +370,14 @@ def test_run_agent_think_override_wins_over_config() -> None:
         max_tool_calls=10,
         terminal_tool="report",
         terminal_schema=Report,
-        think=False,
+        reasoning_effort="none",
     )
     assert fake.chat_requests[0]["reasoning_effort"] == "none"
 
 
-def test_run_agent_think_override_true_leaves_default_thinking_on() -> None:
+def test_run_agent_inherits_global_reasoning_effort() -> None:
     fake = FakeModel([tool_message("report", {"value": "ok"})])
-    config = _config().model_copy(update={"think": False, "reasoning_effort": None})
+    config = _config().model_copy(update={"reasoning_effort": "low"})
     client = LLMClient(config, transport=fake.transport)
     client.run_agent(
         system_prompt="system",
@@ -386,7 +386,21 @@ def test_run_agent_think_override_true_leaves_default_thinking_on() -> None:
         max_tool_calls=10,
         terminal_tool="report",
         terminal_schema=Report,
-        think=True,
+    )
+    assert fake.chat_requests[0]["reasoning_effort"] == "low"
+
+
+def test_run_agent_omits_reasoning_effort_when_unset() -> None:
+    fake = FakeModel([tool_message("report", {"value": "ok"})])
+    config = _config().model_copy(update={"reasoning_effort": None})
+    client = LLMClient(config, transport=fake.transport)
+    client.run_agent(
+        system_prompt="system",
+        user_prompt="user",
+        tools=[_echo_tool(), _report_tool()],
+        max_tool_calls=10,
+        terminal_tool="report",
+        terminal_schema=Report,
     )
     assert "reasoning_effort" not in fake.chat_requests[0]
 

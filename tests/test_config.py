@@ -157,27 +157,18 @@ def test_missing_llm_section_rejected(tmp_path: Path) -> None:
 def test_env_overrides_win_over_file(project, monkeypatch) -> None:
     monkeypatch.setenv("KHOREK_LLM_BASE_URL", "http://env.test/v1")
     monkeypatch.setenv("KHOREK_LLM_MODEL", "env-model")
-    monkeypatch.setenv("KHOREK_LLM_THINK", "true")
     monkeypatch.setenv("KHOREK_LLM_TEMPERATURE", "0.75")
     monkeypatch.setenv("KHOREK_LLM_CALL_TIMEOUT", "42")
     config = load_config(project.root)
     assert config.llm.base_url == "http://env.test/v1"
     assert config.llm.model == "env-model"
-    assert config.llm.think is True
     assert config.llm.temperature == 0.75
     assert config.llm.call_timeout == 42.0
-
-
-def test_env_think_false_override(project, monkeypatch) -> None:
-    write_config(project.root, llm={"think": True})
-    monkeypatch.setenv("KHOREK_LLM_THINK", "false")
-    assert load_config(project.root).llm.think is False
 
 
 @pytest.mark.parametrize(
     ("name", "value", "message"),
     [
-        ("KHOREK_LLM_THINK", "maybe", "must be true or false"),
         ("KHOREK_LLM_TEMPERATURE", "hot", "must be a number"),
         ("KHOREK_LLM_CALL_TIMEOUT", "soon", "must be a number"),
     ],
@@ -211,17 +202,17 @@ def test_fixer_defaults_and_overrides(tmp_path: Path) -> None:
     assert config.agents.fixer.max_tool_calls == 5
 
 
-def test_per_agent_think_override_inherits_otherwise(tmp_path: Path) -> None:
+def test_per_agent_reasoning_effort_override_inherits_otherwise(tmp_path: Path) -> None:
     project = make_project(
         tmp_path / "project",
-        llm={"think": True},
-        agents={"aspect": {"prompt": "", "think": False}},
+        llm={"reasoning_effort": "medium"},
+        agents={"aspect": {"prompt": "", "reasoning_effort": "none"}},
     )
     config = load_config(project.root)
-    assert config.llm.think is True
-    assert config.agents.aspect.think is False
-    assert config.agents.explorer.think is None
-    assert config.agents.fixer.think is None
+    assert config.llm.reasoning_effort == "medium"
+    assert config.agents.aspect.reasoning_effort == "none"
+    assert config.agents.explorer.reasoning_effort is None
+    assert config.agents.fixer.reasoning_effort is None
 
 
 def test_llm_max_tokens_and_reasoning_effort_env(tmp_path: Path, monkeypatch) -> None:

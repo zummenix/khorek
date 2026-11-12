@@ -39,7 +39,7 @@ class ExplorerAgent:
             force_tool_call=False,
             text_is_final=True,
             agent="explorer",
-            think=self._config.think,
+            reasoning_effort=self._config.reasoning_effort,
         )
         return result.text
 

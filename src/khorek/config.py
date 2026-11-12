@@ -30,7 +30,6 @@ DEFAULT_KEEP_TRACES = 30
 # Environment overrides for the [llm] section; the environment wins.
 ENV_BASE_URL = "KHOREK_LLM_BASE_URL"
 ENV_MODEL = "KHOREK_LLM_MODEL"
-ENV_THINK = "KHOREK_LLM_THINK"
 ENV_TEMPERATURE = "KHOREK_LLM_TEMPERATURE"
 ENV_CALL_TIMEOUT = "KHOREK_LLM_CALL_TIMEOUT"
 ENV_MAX_TOKENS = "KHOREK_LLM_MAX_TOKENS"
@@ -52,13 +51,13 @@ class LLMConfig(_StrictModel):
 
     base_url: str = Field(min_length=1)
     model: str = Field(min_length=1)
-    think: bool = True
     temperature: float = Field(default=DEFAULT_TEMPERATURE, ge=0.0, le=2.0)
     call_timeout: float = Field(default=DEFAULT_CALL_TIMEOUT, gt=0.0)
     max_tokens: int = Field(default=DEFAULT_MAX_TOKENS, ge=0)
-    # Model-defined level ("none", "low", ...), passed through when non-empty.
-    # ``think = false`` is folded into ``reasoning_effort = "none"`` for models
-    # whose OpenAI endpoint only supports a boolean thinking switch.
+    # Reasoning level passed to the model ("none", "low", "medium", "high", ...).
+    # Values are backend-specific (Ollama and OpenAI differ slightly); we pass
+    # them through unchecked so any value the endpoint accepts works.
+    # ``None`` omits the field entirely, leaving the model's own default.
     reasoning_effort: str | None = None
 
 
@@ -84,7 +83,7 @@ class AspectAgentConfig(_StrictModel):
     """Aspect agent settings (system prompt and agent budgets)."""
 
     prompt: str = ""
-    think: bool | None = None  # None = inherit [llm].think
+    reasoning_effort: str | None = None  # None = inherit [llm].reasoning_effort
     max_handoffs: int = Field(default=DEFAULT_MAX_HANDOFFS, ge=0)
     max_tool_calls: int = Field(default=DEFAULT_MAX_TOOL_CALLS, gt=0)
 
@@ -93,7 +92,7 @@ class ExplorerAgentConfig(_StrictModel):
     """Explorer sub-agent settings."""
 
     prompt: str = ""
-    think: bool | None = None  # None = inherit [llm].think
+    reasoning_effort: str | None = None  # None = inherit [llm].reasoning_effort
     max_tool_calls: int = Field(default=DEFAULT_MAX_TOOL_CALLS, gt=0)
 
 
@@ -101,7 +100,7 @@ class FixerAgentConfig(_StrictModel):
     """Fixer settings (max rounds per issue and tool budget per round)."""
 
     prompt: str = ""
-    think: bool | None = None  # None = inherit [llm].think
+    reasoning_effort: str | None = None  # None = inherit [llm].reasoning_effort
     max_attempts: int = Field(default=DEFAULT_MAX_ATTEMPTS, gt=0)
     max_tool_calls: int = Field(default=DEFAULT_MAX_TOOL_CALLS, gt=0)
 
@@ -110,7 +109,7 @@ class VerifierAgentConfig(_StrictModel):
     """Verifier settings (used by the fix workflow)."""
 
     prompt: str = ""
-    think: bool | None = None  # None = inherit [llm].think
+    reasoning_effort: str | None = None  # None = inherit [llm].reasoning_effort
 
 
 class AgentsConfig(_StrictModel):
@@ -171,15 +170,6 @@ class Config(_StrictModel):
         return self
 
 
-def _parse_bool(name: str, raw: str) -> bool:
-    normalized = raw.strip().lower()
-    if normalized in {"true", "1", "yes", "on"}:
-        return True
-    if normalized in {"false", "0", "no", "off"}:
-        return False
-    raise ConfigError(f"{name} must be true or false, got {raw!r}")
-
-
 def _env_overrides() -> dict[str, object]:
     """Collect and parse ``KHOREK_LLM_*`` overrides from the environment."""
     overrides: dict[str, object] = {}
@@ -190,9 +180,6 @@ def _env_overrides() -> dict[str, object]:
     model = os.environ.get(ENV_MODEL)
     if model is not None:
         overrides["model"] = model
-    think = os.environ.get(ENV_THINK)
-    if think is not None:
-        overrides["think"] = _parse_bool(ENV_THINK, think)
     temperature = os.environ.get(ENV_TEMPERATURE)
     if temperature is not None:
         try:

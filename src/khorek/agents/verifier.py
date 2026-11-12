@@ -126,7 +126,7 @@ class VerifierAgent:
             terminal_tool="report_verification",
             terminal_schema=VerificationReport,
             agent="verifier",
-            think=self._config.think,
+            reasoning_effort=self._config.reasoning_effort,
         )
         data = result.data
         if not isinstance(data, VerificationReport):

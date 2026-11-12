@@ -242,15 +242,14 @@ def _run_workflow(
             model=config.llm.model,
             db_path=str(db_path),
             config={
-                "think": config.llm.think,
                 "temperature": config.llm.temperature,
                 "max_tokens": config.llm.max_tokens,
                 "reasoning_effort": config.llm.reasoning_effort,
-                "think_overrides": {
-                    "aspect": config.agents.aspect.think,
-                    "explorer": config.agents.explorer.think,
-                    "fixer": config.agents.fixer.think,
-                    "verifier": config.agents.verifier.think,
+                "reasoning_effort_overrides": {
+                    "aspect": config.agents.aspect.reasoning_effort,
+                    "explorer": config.agents.explorer.reasoning_effort,
+                    "fixer": config.agents.fixer.reasoning_effort,
+                    "verifier": config.agents.verifier.reasoning_effort,
                 },
                 "max_prompt_bytes": config.defaults.max_prompt_bytes,
                 "max_tool_output_bytes": config.defaults.max_tool_output_bytes,

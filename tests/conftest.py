@@ -33,7 +33,7 @@ PROJECT_FILE = "# a correct comment\nvalue = 1\n"
 DEFAULT_LLM: dict[str, Any] = {
     "base_url": "http://model.test/v1",
     "model": "fake-model",
-    "think": False,
+    "reasoning_effort": "none",
     "temperature": 0.0,
     "call_timeout": 10.0,
 }

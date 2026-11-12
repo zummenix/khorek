@@ -1,10 +1,9 @@
 [llm]
 base_url = "http://127.0.0.1:11434/v1"
 model = "qwen3.8:27b-mxfp8"
-think = true
 temperature = 0.2
 call_timeout = 600
-# Hard output cap (Ollama: num_predict). Even with think = true a stuck model
+# Hard output cap (Ollama: num_predict). Even a stuck thinking model
 # now stops with finish_reason=length instead of running to the timeout.
 max_tokens = 8192
 
@@ -22,22 +21,24 @@ max_cycles = 25
 
 [agents.aspect]
 prompt = ""
-think = false
+reasoning_effort = "low"
 max_handoffs = 3
 max_tool_calls = 20
 
 [agents.explorer]
 prompt = ""
+reasoning_effort = "low"
 max_tool_calls = 20
 
 [agents.fixer]
 prompt = ""
-think = false
+reasoning_effort = "low"
 max_attempts = 3
 max_tool_calls = 20
 
 [agents.verifier]
 prompt = ""
+reasoning_effort = "none"
 
 # Run in order, first failure is reported back to the Fixer.
 # Commands must be non-mutating checks: the harness does not restore side

@@ -16,7 +16,7 @@ def _client(fake: FakeModel) -> LLMClient:
         LLMConfig(
             base_url="http://model.test/v1",
             model="fake-model",
-            think=False,
+            reasoning_effort="none",
             temperature=0.0,
             call_timeout=10.0,
         ),

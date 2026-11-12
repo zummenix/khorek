@@ -109,26 +109,29 @@ The UI shows:
    server log or run the same request with a small `max_tokens` to see the
    truncated thinking.
 
-## Output cap and per-agent thinking
+## Output cap and per-agent reasoning
 
 The harness supports both `max_tokens` (hard output cap; Ollama maps
-it to `num_predict`) and per-agent thinking control:
+it to `num_predict`) and per-agent reasoning control:
 
 ```toml
 [llm]
-think = true
+# reasoning_effort = "none" | "low" | "medium" | "high" (backend-specific);
+# omitted here so the model keeps its own default.
 max_tokens = 8192
 
 [agents.aspect]
-think = false      # structured whole-file review: no rumination
+reasoning_effort = "none"   # structured whole-file review: no rumination
 [agents.fixer]
-think = false
+reasoning_effort = "none"
 ```
 
-`think` is inherited from `[llm]` unless set on an agent.  On Ollama's
-OpenAI-compatible `/v1/chat/completions`, `think = false` is sent as
-`reasoning_effort = "none"` (the documented thinking switch); `think = true`
-leaves the model default alone unless `reasoning_effort` is set explicitly.
+`reasoning_effort` is inherited from `[llm]` unless set on an agent.  The
+value is passed through to the request unchecked — the valid set is
+backend-specific (Ollama: `none|low|medium|high`, OpenAI:
+`minimal|low|medium|high`).  An unset/`None` value omits the field from the
+request so the model uses its own default; `"none"` switches thinking off
+on Ollama's OpenAI-compatible `/v1/chat/completions`.
 
 ## External observability frameworks
 

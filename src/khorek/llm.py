@@ -140,7 +140,7 @@ class LLMClient:
         terminal_tool: str | None = None,
         terminal_schema: type[BaseModel] | None = None,
         agent: str = "agent",
-        think: bool | None = None,
+        reasoning_effort: str | None = None,
     ) -> AgentResult:
         """Run a bounded tool-calling loop and return its final result."""
         by_name = {tool.name: tool for tool in tools}
@@ -209,7 +209,7 @@ class LLMClient:
                     force_tool_call,
                     agent=agent,
                     step=requests,
-                    think=think,
+                    reasoning_effort=reasoning_effort,
                 )
                 requests += 1
                 text = _message_text(message)
@@ -225,7 +225,7 @@ class LLMClient:
                             "model hit max_tokens="
                             f"{self.config.max_tokens or 'the model default'} before calling "
                             "a tool; this usually means a thinking loop. Raise max_tokens or "
-                            "set think = false for this agent.",
+                            'set reasoning_effort = "none" for this agent.',
                         )
                     consecutive_text += 1
                     steps += 1
@@ -450,7 +450,7 @@ class LLMClient:
         *,
         agent: str,
         step: int,
-        think: bool | None = None,
+        reasoning_effort: str | None = None,
     ) -> tuple[dict[str, Any], str | None]:
         payload: dict[str, Any] = {
             "model": self.config.model,
@@ -463,13 +463,14 @@ class LLMClient:
             # Ollama maps this to num_predict.  Without a cap a thinking model
             # can generate until the call timeout with nothing to show for it.
             payload["max_tokens"] = self.config.max_tokens
-        effective_think = self.config.think if think is None else think
-        if not effective_think:
-            # Ollama's /v1 chat endpoint uses reasoning_effort (not
-            # chat_template_kwargs) to switch thinking off.
-            payload["reasoning_effort"] = "none"
-        elif self.config.reasoning_effort:
-            payload["reasoning_effort"] = self.config.reasoning_effort
+        # Per-agent value wins over the [llm] default; None omits the field
+        # entirely so the model keeps its own default, "none" switches
+        # thinking off (Ollama's documented switch for /v1 chat).
+        effective = (
+            reasoning_effort if reasoning_effort is not None else self.config.reasoning_effort
+        )
+        if effective:
+            payload["reasoning_effort"] = effective
 
         url = f"{self._base_url}/chat/completions"
         tracer = self.tracer
