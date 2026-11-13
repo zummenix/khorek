@@ -274,7 +274,7 @@ class FixerAgent:
         self._client = client
         self._config = config
         self._snapshotter = snapshotter
-        self._system_prompt = config.prompt.strip() or default_prompt("fixer")
+        self._system_prompt = default_prompt("fixer")
         self._tools = [
             read_file_tool(project_root, defaults.max_file_bytes),
             edit_file_tool(project_root, snapshotter),

@@ -199,24 +199,6 @@ def test_fixer_prompt_has_issue_file_snippet_and_previous_failure(tmp_path: Path
     assert {"grep", "list_files", "ask_explorer"}.isdisjoint(tool_names)
 
 
-def test_fixer_system_prompt_is_overridable(tmp_path: Path) -> None:
-    project = make_project(tmp_path / "project")
-    fake = FakeModel([tool_message("report_fix_result", {"fixed": False, "summary": "no"})])
-    client = _client(fake)
-    try:
-        agent = FixerAgent(
-            client,
-            project_root=project.root,
-            config=FixerAgentConfig(prompt="CUSTOM FIXER PROMPT"),
-            defaults=DefaultsConfig(),
-            snapshotter=Snapshotter(project.root),
-        )
-        agent.fix(_issue(1, 1), "src/a.py", "x = 1\n")
-    finally:
-        client.close()
-    assert fake.chat_requests[0]["messages"][0]["content"] == "CUSTOM FIXER PROMPT"
-
-
 def test_fixer_agent_edits_through_tool_calls(tmp_path: Path) -> None:
     project = make_project(tmp_path / "project", files={"src/a.py": "value = 1\n"})
     fake = FakeModel(

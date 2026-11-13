@@ -47,11 +47,11 @@ DEFAULT_DEFAULTS: dict[str, Any] = {
 }
 
 DEFAULT_AGENTS: dict[str, dict[str, Any]] = {
-    "aspect": {"prompt": "", "max_handoffs": 3, "max_tool_calls": 20},
-    "explorer": {"prompt": "", "max_tool_calls": 20},
-    "fixer": {"prompt": "", "max_attempts": 3, "max_tool_calls": 20},
-    "verifier": {"prompt": ""},
-    "reviewer": {"prompt": "", "reasoning_effort": "low", "max_handoffs": 2, "max_tool_calls": 20},
+    "aspect": {"max_handoffs": 3, "max_tool_calls": 20},
+    "explorer": {"max_tool_calls": 20},
+    "fixer": {"max_attempts": 3, "max_tool_calls": 20},
+    "verifier": {},
+    "reviewer": {"reasoning_effort": "low", "max_handoffs": 2, "max_tool_calls": 20},
 }
 
 DEFAULT_ASPECT: dict[str, Any] = {

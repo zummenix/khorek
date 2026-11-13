@@ -92,7 +92,7 @@ class ReviewerAgent:
     ) -> None:
         self._client = client
         self._config = config
-        self._system_prompt = config.prompt.strip() or default_prompt("reviewer")
+        self._system_prompt = default_prompt("reviewer")
         self._tools = [
             *read_only_tools(project_root, defaults.max_file_bytes),
             report_review_tool(),

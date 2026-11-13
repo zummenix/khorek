@@ -409,26 +409,6 @@ def test_empty_terminal_arguments_get_repaired(project) -> None:
     assert row.outcome == "issues"
 
 
-def test_agent_system_prompts_are_overridable(tmp_path: Path) -> None:
-    project = make_project(
-        tmp_path / "project",
-        agents={
-            "aspect": {"prompt": "CUSTOM ASPECT PROMPT"},
-            "explorer": {"prompt": "CUSTOM EXPLORER PROMPT"},
-        },
-    )
-    fake = FakeModel(
-        [
-            tool_message("ask_explorer", {"question": "where?"}),
-            text_message("answer"),
-            report(),
-        ]
-    )
-    assert run_cli(fake, *explore_args(project)) == 0
-    assert fake.chat_requests[0]["messages"][0]["content"] == "CUSTOM ASPECT PROMPT"
-    assert fake.chat_requests[1]["messages"][0]["content"] == "CUSTOM EXPLORER PROMPT"
-
-
 def test_default_aspect_prompt_explains_one_based_lines(project) -> None:
     fake = FakeModel([report()])
     assert run_cli(fake, *explore_args(project)) == 0

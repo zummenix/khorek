@@ -111,7 +111,7 @@ class VerifierAgent:
     def __init__(self, client: LLMClient, *, config: VerifierAgentConfig) -> None:
         self._client = client
         self._config = config
-        self._system_prompt = config.prompt.strip() or default_prompt("verifier")
+        self._system_prompt = default_prompt("verifier")
         self._tools = [report_verification_tool()]
 
     def summarise(self, failures: Sequence[Failure]) -> str:

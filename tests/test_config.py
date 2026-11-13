@@ -25,7 +25,6 @@ def test_minimal_config_applies_documented_defaults(project) -> None:
 
 def test_reviewer_defaults(project) -> None:
     config = load_config(project.root)
-    assert config.agents.reviewer.prompt == ""
     assert config.agents.reviewer.reasoning_effort == "low"
     assert config.agents.reviewer.max_handoffs == 2
     assert config.agents.reviewer.max_tool_calls == 20
@@ -214,7 +213,7 @@ def test_per_agent_reasoning_effort_override_inherits_otherwise(tmp_path: Path) 
     project = make_project(
         tmp_path / "project",
         llm={"reasoning_effort": "medium"},
-        agents={"aspect": {"prompt": "", "reasoning_effort": "none"}},
+        agents={"aspect": {"reasoning_effort": "none"}},
     )
     config = load_config(project.root)
     assert config.llm.reasoning_effort == "medium"

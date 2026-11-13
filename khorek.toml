@@ -20,28 +20,23 @@ max_tool_output_bytes = 16000
 max_cycles = 25
 
 [agents.aspect]
-prompt = ""
 reasoning_effort = "low"
 max_handoffs = 3
 max_tool_calls = 20
 
 [agents.explorer]
-prompt = ""
 reasoning_effort = "low"
 max_tool_calls = 20
 
 [agents.fixer]
-prompt = ""
 reasoning_effort = "low"
 max_attempts = 3
 max_tool_calls = 20
 
 [agents.verifier]
-prompt = ""
 reasoning_effort = "none"
 
 [agents.reviewer]
-prompt = ""
 reasoning_effort = "low"
 max_handoffs = 2
 max_tool_calls = 20

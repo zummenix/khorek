@@ -111,7 +111,7 @@ class AspectAgent:
         self._client = client
         self._config = config
         self._explorer = explorer
-        self._system_prompt = config.prompt.strip() or default_prompt("aspect")
+        self._system_prompt = default_prompt("aspect")
         self._read_tools = read_only_tools(project_root, defaults.max_file_bytes)
 
     def review(self, *, aspect: AspectConfig, path: str, content: str) -> IssueReport:

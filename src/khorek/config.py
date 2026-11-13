@@ -81,9 +81,8 @@ class DefaultsConfig(_StrictModel):
 
 
 class AspectAgentConfig(_StrictModel):
-    """Aspect agent settings (system prompt and agent budgets)."""
+    """Aspect agent settings (agent budgets)."""
 
-    prompt: str = ""
     reasoning_effort: str | None = None  # None = inherit [llm].reasoning_effort
     max_handoffs: int = Field(default=DEFAULT_MAX_HANDOFFS, ge=0)
     max_tool_calls: int = Field(default=DEFAULT_MAX_TOOL_CALLS, gt=0)
@@ -92,7 +91,6 @@ class AspectAgentConfig(_StrictModel):
 class ExplorerAgentConfig(_StrictModel):
     """Explorer sub-agent settings."""
 
-    prompt: str = ""
     reasoning_effort: str | None = None  # None = inherit [llm].reasoning_effort
     max_tool_calls: int = Field(default=DEFAULT_MAX_TOOL_CALLS, gt=0)
 
@@ -100,7 +98,6 @@ class ExplorerAgentConfig(_StrictModel):
 class FixerAgentConfig(_StrictModel):
     """Fixer settings (max rounds per issue and tool budget per round)."""
 
-    prompt: str = ""
     reasoning_effort: str | None = None  # None = inherit [llm].reasoning_effort
     max_attempts: int = Field(default=DEFAULT_MAX_ATTEMPTS, gt=0)
     max_tool_calls: int = Field(default=DEFAULT_MAX_TOOL_CALLS, gt=0)
@@ -109,14 +106,12 @@ class FixerAgentConfig(_StrictModel):
 class VerifierAgentConfig(_StrictModel):
     """Verifier settings (used by the fix workflow)."""
 
-    prompt: str = ""
     reasoning_effort: str | None = None  # None = inherit [llm].reasoning_effort
 
 
 class ReviewerAgentConfig(_StrictModel):
     """Reviewer settings (used by the fix workflow)."""
 
-    prompt: str = ""
     reasoning_effort: str | None = None  # None = inherit [llm].reasoning_effort
     max_handoffs: int = Field(default=DEFAULT_REVIEW_MAX_HANDOFFS, ge=0)
     max_tool_calls: int = Field(default=DEFAULT_MAX_TOOL_CALLS, gt=0)

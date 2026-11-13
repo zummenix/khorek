@@ -25,7 +25,7 @@ class ExplorerAgent:
         self._client = client
         self._config = config
         self._tools = read_only_tools(project_root, defaults.max_file_bytes)
-        self._system_prompt = config.prompt.strip() or default_prompt("explorer")
+        self._system_prompt = default_prompt("explorer")
 
     def ask(self, question: str) -> str:
         """Ask the explorer a question and return its plain-text answer."""
