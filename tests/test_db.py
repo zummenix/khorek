@@ -13,6 +13,7 @@ from khorek.db import (
     SCHEMA_VERSION,
     Database,
     DatabaseError,
+    Issue,
     default_db_path,
 )
 
@@ -178,6 +179,212 @@ def test_issue_crud_counts_and_lookups(tmp_path: Path) -> None:
         assert db.delete_issue(second) is False
         assert db.delete_issues_for("comments", "src/b.py") == 1
         assert db.count_issues() == 1
+
+
+def _seed_filter_fixtures(db: Database) -> dict[str, int]:
+    """Insert a known set of issues covering aspects, severities, and paths."""
+    specs = {
+        "a": ("comments", "src/khorek/db.py", "high"),
+        "b": ("comments", "src/khorek/cli.py", "low"),
+        "c": ("dead-code", "src/khorek/agents/explorer.py", "medium"),
+        "d": ("dead-code", "src/other.py", "high"),
+        # Controls for LIKE-wildcard escaping in path prefixes.
+        "pct": ("comments", "src/50%done.py", "low"),
+        "pct_control": ("comments", "src/50xdone.py", "low"),
+        "und": ("comments", "src/a_b.py", "medium"),
+        "und_control": ("comments", "src/aXb.py", "medium"),
+    }
+    ids: dict[str, int] = {}
+    for name, (aspect, path, severity) in specs.items():
+        ids[name] = db.insert_issue(
+            aspect_id=aspect,
+            path=path,
+            sha256="sha",
+            description=f"issue {name}",
+            line_start=1,
+            line_end=1,
+            severity=severity,
+        )
+    return ids
+
+
+def _ids(issues: list[Issue]) -> list[int]:
+    return [issue.id for issue in issues]
+
+
+def test_list_issues_severity_and_aspect_filters(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    with Database(tmp_path / "khorek.db", project) as db:
+        ids = _seed_filter_fixtures(db)
+
+        # OR within a single flag.
+        assert _ids(db.list_issues(severities=["high"])) == sorted(
+            [ids["a"], ids["d"]], key=lambda i: i
+        )
+        assert set(_ids(db.list_issues(severities=["high", "low"]))) == {
+            ids["a"],
+            ids["b"],
+            ids["d"],
+            ids["pct"],
+            ids["pct_control"],
+        }
+        assert set(_ids(db.list_issues(aspect_ids=["dead-code"]))) == {
+            ids["c"],
+            ids["d"],
+        }
+        assert set(_ids(db.list_issues(aspect_ids=["comments", "dead-code"]))) == set(ids.values())
+
+        # AND across flags.
+        assert _ids(db.list_issues(aspect_ids=["comments"], severities=["high"])) == [ids["a"]]
+        assert _ids(db.list_issues(aspect_ids=["dead-code"], severities=["high"])) == [ids["d"]]
+
+        # count_issues mirrors the filters.
+        assert db.count_issues(severities=["high", "low"]) == 5
+        assert db.count_issues(aspect_ids=["dead-code"], severities=["high"]) == 1
+        assert db.count_issues(aspect_ids=["nope"]) == 0
+
+
+def test_list_issues_path_prefix_filters(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    with Database(tmp_path / "khorek.db", project) as db:
+        ids = _seed_filter_fixtures(db)
+
+        # Prefix match (directory-like), OR within the flag.
+        assert set(_ids(db.list_issues(path_prefixes=["src/khorek/"]))) == {
+            ids["a"],
+            ids["b"],
+            ids["c"],
+        }
+        assert _ids(db.list_issues(path_prefixes=["src/khorek/agents"])) == [ids["c"]]
+        assert set(_ids(db.list_issues(path_prefixes=["src/khorek/", "src/other.py"]))) == {
+            ids["a"],
+            ids["b"],
+            ids["c"],
+            ids["d"],
+        }
+
+        # '%' in a prefix is literal, not a LIKE wildcard.
+        assert _ids(db.list_issues(path_prefixes=["src/50%"])) == [ids["pct"]]
+        # '_' in a prefix is literal, not a LIKE wildcard.
+        assert _ids(db.list_issues(path_prefixes=["src/a_b"])) == [ids["und"]]
+
+        # AND with another flag.
+        assert _ids(db.list_issues(path_prefixes=["src/khorek/"], severities=["medium"])) == [
+            ids["c"]
+        ]
+
+
+def test_list_issues_invalid_severity_rejected(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    with Database(tmp_path / "khorek.db", project) as db:
+        db.insert_issue(
+            aspect_id="comments",
+            path="src/a.py",
+            sha256="sha",
+            description="x",
+            line_start=1,
+            line_end=1,
+            severity="high",
+        )
+        with pytest.raises(ValueError, match="invalid severity"):
+            db.list_issues(severities=["bogus"])
+        with pytest.raises(ValueError, match="invalid severity"):
+            db.count_issues(severities=["bogus"])
+
+
+def test_delete_issues_batch(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    with Database(tmp_path / "khorek.db", project) as db:
+        ids = _seed_filter_fixtures(db)
+        assert db.count_issues() == len(ids)
+
+        assert db.delete_issues([ids["a"], ids["d"]]) == 2
+        remaining = set(_ids(db.list_issues()))
+        assert remaining == set(ids.values()) - {ids["a"], ids["d"]}
+
+        # Unknown ids are ignored; duplicates collapse.
+        assert db.delete_issues([999999]) == 0
+        assert db.delete_issues([ids["b"], ids["b"]]) == 1
+        assert db.delete_issues([]) == 0
+        assert db.count_issues() == len(ids) - 3
+
+
+def test_readonly_database_rejects_missing_file(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    target = tmp_path / "nested" / "khorek.db"
+    with pytest.raises(DatabaseError, match="does not exist"):
+        Database(target, project, readonly=True)
+    assert not target.parent.exists()  # no parent directory created
+
+
+def test_readonly_database_reads_and_validates(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    path = tmp_path / "khorek.db"
+    with Database(path, project) as db:
+        issue_id = db.insert_issue(
+            aspect_id="comments",
+            path="src/a.py",
+            sha256="sha",
+            description="x",
+            line_start=1,
+            line_end=1,
+            severity="high",
+        )
+        db.upsert_state("comments", "src/a.py", "sha", "issues")
+
+    with Database(path, project, readonly=True) as ro:
+        assert ro.readonly is True
+        assert ro.get_issue(issue_id) is not None
+        assert ro.list_issues(severities=["high"]) == [ro.get_issue(issue_id)]
+        assert ro.count_issues() == 1
+        assert ro.get_state("comments", "src/a.py") is not None
+
+    # A wrong project root is still rejected, leaving the file byte-identical.
+    other = tmp_path / "other"
+    other.mkdir()
+    before = path.read_bytes()
+    with pytest.raises(DatabaseError, match="belongs to project"):
+        Database(path, other, readonly=True)
+    assert path.read_bytes() == before
+
+    # A schema-version mismatch is still rejected.
+    with sqlite3.connect(path) as raw:
+        raw.execute("UPDATE meta SET value = '99' WHERE key = 'schema_version'")
+        raw.commit()
+    with pytest.raises(DatabaseError, match="schema version"):
+        Database(path, project, readonly=True)
+
+
+def test_readonly_database_creates_no_ddl(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    # A database with valid meta but no khorek tables: readonly must not create them.
+    path = tmp_path / "bare.db"
+    with sqlite3.connect(path) as raw:
+        raw.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        raw.execute(
+            "INSERT INTO meta (key, value) VALUES ('project_root', ?)",
+            (str(project.resolve()),),
+        )
+        raw.execute(
+            "INSERT INTO meta (key, value) VALUES ('schema_version', ?)",
+            (SCHEMA_VERSION,),
+        )
+        raw.commit()
+
+    with Database(path, project, readonly=True) as ro:
+        assert ro.readonly is True
+    with sqlite3.connect(path) as raw:
+        tables = {
+            row[0] for row in raw.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
+    assert tables == {"meta"}
 
 
 def test_update_issue_rejects_unknown_fields(tmp_path: Path) -> None:

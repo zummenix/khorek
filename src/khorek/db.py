@@ -12,7 +12,8 @@ import hashlib
 import os
 import re
 import sqlite3
-from collections.abc import Collection
+import urllib.parse
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -125,15 +126,29 @@ def default_db_path(project_root: Path, home: Path | None = None) -> Path:
 
 
 class Database:
-    """An open khorek database with schema applied and meta validated."""
+    """An open khorek database with schema applied and meta validated.
 
-    def __init__(self, path: Path, project_root: Path) -> None:
+    ``readonly=True`` opens an existing database for reading only: no parent
+    directory, no WAL pragma, no DDL, no meta stamp.  This is required for the
+    lockless read paths (``issues --stale``, ``issues show``, and a list whose
+    run lock is held): the write-mode preamble would take a brief write lock
+    and stall or fail against a concurrent writer.
+    """
+
+    def __init__(self, path: Path, project_root: Path, *, readonly: bool = False) -> None:
         self.path = Path(path)
         self.project_root = _canonical(project_root)
+        self.readonly = readonly
         self._connection: sqlite3.Connection | None = None
         try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            connection = sqlite3.connect(str(self.path))
+            if readonly:
+                if not self.path.is_file():
+                    raise DatabaseError(f"database does not exist: {self.path}")
+                uri = f"file:{urllib.parse.quote(str(self.path.resolve()), safe='/')}?mode=ro"
+                connection = sqlite3.connect(uri, uri=True)
+            else:
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+                connection = sqlite3.connect(str(self.path))
             connection.row_factory = sqlite3.Row
             self._connection = connection
             # A meta table means this is an existing database.  Validate it
@@ -142,12 +157,13 @@ class Database:
             existing_meta = self._meta_table_exists(connection)
             if existing_meta:
                 self._validate_meta(connection)
-            connection.execute("PRAGMA journal_mode=WAL")
-            connection.execute("PRAGMA synchronous=NORMAL")
-            connection.executescript(_SCHEMA)
-            if not existing_meta:
-                self._stamp_meta(connection)
-            connection.commit()
+            if not readonly:
+                connection.execute("PRAGMA journal_mode=WAL")
+                connection.execute("PRAGMA synchronous=NORMAL")
+                connection.executescript(_SCHEMA)
+                if not existing_meta:
+                    self._stamp_meta(connection)
+                connection.commit()
         except DatabaseError:
             self.close()
             raise
@@ -318,6 +334,18 @@ class Database:
             cursor = self.connection.execute("DELETE FROM issues WHERE id = ?", (issue_id,))
         return cursor.rowcount > 0
 
+    def delete_issues(self, ids: Sequence[int]) -> int:
+        """Delete the given issue ids in one transaction; return how many were removed."""
+        unique = sorted({int(issue_id) for issue_id in ids})
+        if not unique:
+            return 0
+        placeholders = ", ".join("?" for _ in unique)
+        with self.connection:
+            cursor = self.connection.execute(
+                f"DELETE FROM issues WHERE id IN ({placeholders})", unique
+            )
+        return cursor.rowcount
+
     def delete_issues_for(self, aspect_id: str, path: str) -> int:
         with self.connection:
             cursor = self.connection.execute(
@@ -330,16 +358,29 @@ class Database:
             cursor = self.connection.execute("DELETE FROM issues WHERE path = ?", (path,))
         return cursor.rowcount
 
-    def list_issues(self, *, aspect_id: str | None = None, path: str | None = None) -> list[Issue]:
-        clauses: list[str] = []
-        parameters: list[str] = []
-        if aspect_id is not None:
-            clauses.append("aspect_id = ?")
-            parameters.append(aspect_id)
-        if path is not None:
-            clauses.append("path = ?")
-            parameters.append(path)
-        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+    def list_issues(
+        self,
+        *,
+        aspect_id: str | None = None,
+        path: str | None = None,
+        aspect_ids: Collection[str] | None = None,
+        severities: Collection[str] | None = None,
+        path_prefixes: Collection[str] | None = None,
+    ) -> list[Issue]:
+        """Return open issues sorted by id.
+
+        ``aspect_id``/``path`` are exact matches (used by the workflows);
+        ``aspect_ids``/``severities``/``path_prefixes`` are repeatable filters
+        where values within one argument are OR-ed and different arguments
+        are AND-ed.  A prefix is matched literally (``%``/``_`` escaped).
+        """
+        where, parameters = _issue_filter(
+            aspect_id=aspect_id,
+            path=path,
+            aspect_ids=aspect_ids,
+            severities=severities,
+            path_prefixes=path_prefixes,
+        )
         rows = self.connection.execute(
             f"SELECT * FROM issues{where} ORDER BY id",
             parameters,
@@ -356,16 +397,22 @@ class Database:
         row = self.connection.execute("SELECT * FROM issues WHERE id = ?", (issue_id,)).fetchone()
         return None if row is None else _issue_from_row(row)
 
-    def count_issues(self, *, aspect_id: str | None = None, path: str | None = None) -> int:
-        clauses: list[str] = []
-        parameters: list[str] = []
-        if aspect_id is not None:
-            clauses.append("aspect_id = ?")
-            parameters.append(aspect_id)
-        if path is not None:
-            clauses.append("path = ?")
-            parameters.append(path)
-        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+    def count_issues(
+        self,
+        *,
+        aspect_id: str | None = None,
+        path: str | None = None,
+        aspect_ids: Collection[str] | None = None,
+        severities: Collection[str] | None = None,
+        path_prefixes: Collection[str] | None = None,
+    ) -> int:
+        where, parameters = _issue_filter(
+            aspect_id=aspect_id,
+            path=path,
+            aspect_ids=aspect_ids,
+            severities=severities,
+            path_prefixes=path_prefixes,
+        )
         row = self.connection.execute(
             f"SELECT COUNT(*) AS total FROM issues{where}", parameters
         ).fetchone()
@@ -419,6 +466,58 @@ class Database:
             issues_removed = self.connection.execute(issue_sql, ids).rowcount
             state_removed = self.connection.execute(state_sql, ids).rowcount
         return int(issues_removed + state_removed)
+
+
+def _like_escape(value: str) -> str:
+    """Escape LIKE wildcards so *value* matches literally as a prefix."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _issue_filter(
+    *,
+    aspect_id: str | None = None,
+    path: str | None = None,
+    aspect_ids: Collection[str] | None = None,
+    severities: Collection[str] | None = None,
+    path_prefixes: Collection[str] | None = None,
+) -> tuple[str, list[str]]:
+    """Build the WHERE clause (and parameters) for issue queries.
+
+    Exact ``aspect_id``/``path`` match; ``aspect_ids``/``severities`` are
+    OR-ed within the argument and AND-ed across arguments; ``path_prefixes``
+    are literal prefix matches (``%``/``_`` escaped), OR-ed within the
+    argument.
+    """
+    clauses: list[str] = []
+    parameters: list[str] = []
+    if aspect_id is not None:
+        clauses.append("aspect_id = ?")
+        parameters.append(aspect_id)
+    if path is not None:
+        clauses.append("path = ?")
+        parameters.append(path)
+    if aspect_ids:
+        placeholders = ", ".join("?" for _ in aspect_ids)
+        clauses.append(f"aspect_id IN ({placeholders})")
+        parameters.extend(aspect_ids)
+    if severities:
+        unknown = [severity for severity in severities if severity not in _SEVERITIES]
+        if unknown:
+            raise ValueError(f"invalid severity: {unknown[0]!r}")
+        placeholders = ", ".join("?" for _ in severities)
+        clauses.append(f"severity IN ({placeholders})")
+        parameters.extend(severities)
+    if path_prefixes:
+        prefix_clauses = []
+        for prefix in path_prefixes:
+            prefix_clauses.append("path LIKE ? ESCAPE '\\'")
+            parameters.append(_like_escape(prefix) + "%")
+        if len(prefix_clauses) == 1:
+            clauses.append(prefix_clauses[0])
+        else:
+            clauses.append("(" + " OR ".join(prefix_clauses) + ")")
+    where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+    return where, parameters
 
 
 def _issue_from_row(row: sqlite3.Row) -> Issue:

@@ -13,6 +13,16 @@ import httpx
 from khorek.config import Config, ConfigError, load_config
 from khorek.context import AppContext
 from khorek.db import Database, DatabaseError, default_db_path
+from khorek.issues import (
+    IssueOutcome,
+    dismiss,
+    issue_status,
+    prune_stale,
+    render_list,
+    render_show,
+    staleness,
+)
+from khorek.issues import delete as delete_issues
 from khorek.llm import LLMClient, ModelUnavailable
 from khorek.lock import LockError, LockHeld, acquire
 from khorek.report import Reporter
@@ -150,7 +160,144 @@ def build_parser() -> argparse.ArgumentParser:
         help="database file to delete (default: ~/.khorek/<slug>.db)",
     )
 
+    _build_issues_parser(subparsers)
+
     return parser
+
+
+def _add_issues_root_arguments(
+    parser: argparse.ArgumentParser, *, path_long: bool, suppressed: bool
+) -> None:
+    """Add the project-root and --db arguments shared by the issues commands.
+
+    ``suppressed`` marks a subparser whose values would otherwise clobber
+    arguments already parsed by the parent ``issues`` parser (argparse
+    applies subparser defaults over parent values).
+    """
+    root_default = argparse.SUPPRESS if suppressed else "."
+    if path_long:
+        parser.add_argument(
+            "-p",
+            "--path",
+            dest="path",
+            default=root_default,
+            help="project root to operate on (default: current directory)",
+        )
+    else:
+        parser.add_argument(
+            "-p",
+            dest="path",
+            default=root_default,
+            help="project root to operate on (default: current directory)",
+        )
+    parser.add_argument(
+        "--db",
+        default=argparse.SUPPRESS if suppressed else None,
+        help="database file to use (default: ~/.khorek/<slug>.db)",
+    )
+
+
+def _add_list_arguments(parser: argparse.ArgumentParser, *, suppressed: bool) -> None:
+    """Add the repeatable list filters (OR within a flag, AND across flags)."""
+    default = argparse.SUPPRESS if suppressed else []
+    parser.add_argument(
+        "--aspect",
+        dest="aspects",
+        action="append",
+        default=default,
+        metavar="ID",
+        help="only issues from this aspect id (repeatable, OR between values)",
+    )
+    parser.add_argument(
+        "--severity",
+        dest="severities",
+        action="append",
+        default=default,
+        choices=("low", "medium", "high"),
+        metavar="SEVERITY",
+        help="only issues with this severity (repeatable, OR between values)",
+    )
+    parser.add_argument(
+        "--path",
+        dest="path_prefixes",
+        action="append",
+        default=default,
+        metavar="PREFIX",
+        help="only issues under this path prefix (repeatable, OR between values)",
+    )
+    parser.add_argument(
+        "--stale",
+        action="store_true",
+        default=argparse.SUPPRESS if suppressed else False,
+        help="show stale issues, labeled, without pruning (lockless read)",
+    )
+
+
+def _build_issues_parser(subparsers: argparse._SubParsersAction) -> None:
+    """Build the ``issues`` subcommand group (list is the default).
+
+    The bare ``issues`` parser carries the list filters so ``khorek issues
+    --path src/`` works without the explicit ``list`` subcommand.  On ``list``
+    the long form ``--path`` is the prefix *filter*; the project root is
+    ``-p`` there.  On ``show``/``dismiss``/``delete`` the long form
+    ``--path`` is the project root.
+    """
+    issues = subparsers.add_parser(
+        "issues",
+        help="list, show, dismiss, or delete recorded issues",
+        description="Triage the recorded issues of a project (no LLM calls).",
+    )
+    _add_issues_root_arguments(issues, path_long=False, suppressed=False)
+    _add_list_arguments(issues, suppressed=False)
+
+    issue_sub = issues.add_subparsers(dest="issues_command", metavar="SUBCOMMAND")
+
+    list_parser = issue_sub.add_parser(
+        "list",
+        help="list open issues (the default subcommand)",
+        description="List open issues; stale ones are pruned unless the run "
+        "lock is held or --stale is given.",
+    )
+    _add_issues_root_arguments(list_parser, path_long=False, suppressed=True)
+    _add_list_arguments(list_parser, suppressed=True)
+
+    show_parser = issue_sub.add_parser(
+        "show",
+        help="show one issue in full detail",
+        description="Show one issue in full detail (lockless read; never prunes).",
+    )
+    _add_issues_root_arguments(show_parser, path_long=True, suppressed=True)
+    show_parser.add_argument("id", type=int, metavar="ID", help="issue id to show")
+
+    dismiss_parser = issue_sub.add_parser(
+        "dismiss",
+        help="dismiss issues as not relevant",
+        description="Dismiss issue ids as not relevant; a drained pair is "
+        "marked clean so the next explore skips it.",
+    )
+    _add_issues_root_arguments(dismiss_parser, path_long=True, suppressed=True)
+    dismiss_parser.add_argument(
+        "ids",
+        nargs="+",
+        type=int,
+        metavar="ID",
+        help="issue ids to dismiss",
+    )
+
+    delete_parser = issue_sub.add_parser(
+        "delete",
+        help="delete issues and their pair state",
+        description="Delete issue ids completely so the next explore "
+        "re-examines the file from scratch.",
+    )
+    _add_issues_root_arguments(delete_parser, path_long=True, suppressed=True)
+    delete_parser.add_argument(
+        "ids",
+        nargs="+",
+        type=int,
+        metavar="ID",
+        help="issue ids to delete",
+    )
 
 
 def _fail(message: str) -> int:
@@ -457,6 +604,172 @@ def _run_reset(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _issue_filters(
+    args: argparse.Namespace,
+) -> tuple[Sequence[str] | None, Sequence[str] | None, Sequence[str] | None]:
+    """The repeatable list filters from the parsed arguments.
+
+    Returns ``(aspect_ids, severities, path_prefixes)``; an empty filter list
+    is normalized to ``None`` so the database applies no constraint.
+    """
+    aspects = getattr(args, "aspects", None)
+    severities = getattr(args, "severities", None)
+    prefixes = getattr(args, "path_prefixes", None)
+    return aspects or None, severities or None, prefixes or None
+
+
+def _list_readonly(
+    db_path: Path,
+    project_root: Path,
+    filters: tuple[Sequence[str] | None, Sequence[str] | None, Sequence[str] | None],
+    *,
+    note_prefix: str | None,
+) -> int:
+    """Print the issue list from a read-only connection, stale rows labeled.
+
+    ``note_prefix`` (e.g. ``"run in progress (pid 42): "``) is prepended to
+    the ``K stale issue(s) shown, not pruned`` note, which is printed only
+    when at least one displayed row is stale.
+    """
+    aspect_ids, severities, path_prefixes = filters
+    try:
+        with Database(db_path, project_root, readonly=True) as database:
+            issues = database.list_issues(
+                aspect_ids=aspect_ids,
+                severities=severities,
+                path_prefixes=path_prefixes,
+            )
+            stale_map = staleness(database, project_root)
+            rendered = render_list(issues, stale=stale_map)
+    except DatabaseError as exc:
+        return _fail(str(exc))
+    shown_stale = sum(1 for issue in issues if stale_map.get(issue.id) != "fresh")
+    if shown_stale:
+        note = f"{shown_stale} stale issue(s) shown, not pruned"
+        if note_prefix:
+            note = f"{note_prefix}{note}"
+        print(note)
+        print()
+    print(rendered)
+    return EXIT_OK
+
+
+def _run_issues_list(args: argparse.Namespace, project_root: Path, db_path: Path) -> int:
+    filters = _issue_filters(args)
+    if getattr(args, "stale", False):
+        return _list_readonly(db_path, project_root, filters, note_prefix=None)
+
+    aspect_ids, severities, path_prefixes = filters
+    try:
+        with acquire(db_path):
+            with Database(db_path, project_root) as database:
+                pruned = prune_stale(database, project_root)
+                issues = database.list_issues(
+                    aspect_ids=aspect_ids,
+                    severities=severities,
+                    path_prefixes=path_prefixes,
+                )
+                rendered = render_list(issues, stale=None)
+    except LockHeld as exc:
+        return _list_readonly(
+            db_path, project_root, filters, note_prefix=f"run in progress (pid {exc.pid}): "
+        )
+    except LockError as exc:
+        return _fail(str(exc))
+    except DatabaseError as exc:
+        return _fail(str(exc))
+
+    if pruned:
+        print(f"pruned {pruned} stale issue(s) (file changed or missing)")
+        print()
+    print(rendered)
+    return EXIT_OK
+
+
+def _run_issues_show(args: argparse.Namespace, project_root: Path, db_path: Path) -> int:
+    try:
+        with Database(db_path, project_root, readonly=True) as database:
+            issue = database.get_issue(args.id)
+    except DatabaseError as exc:
+        return _fail(str(exc))
+    if issue is None:
+        print(f"khorek: unknown issue id: {args.id}", file=sys.stderr)
+        return EXIT_ERROR
+    print(render_show(issue, status=issue_status(project_root, issue)))
+    return EXIT_OK
+
+
+def _report_outcomes(verb: str, outcomes: Sequence[IssueOutcome]) -> int:
+    """Print one line per outcome; exit 1 when any id was unknown."""
+    exit_code = EXIT_OK
+    for outcome in outcomes:
+        if not outcome.found:
+            print(f"khorek: unknown issue id: {outcome.issue_id}", file=sys.stderr)
+            exit_code = EXIT_ERROR
+            continue
+        suffix = f" \u2192 {outcome.action}" if outcome.action else ""
+        location = f"{outcome.aspect_id} {outcome.path}:{outcome.lines}"
+        print(f"{verb} #{outcome.issue_id}: {location}{suffix}")
+    return exit_code
+
+
+def _run_issues_mutation(
+    args: argparse.Namespace,
+    project_root: Path,
+    db_path: Path,
+    *,
+    verb: str,
+    operation: Callable[[Database, Path, Sequence[int]], list[IssueOutcome]],
+) -> int:
+    """Shared body for ``dismiss``/``delete``: lock, run, report per-id lines."""
+    try:
+        with acquire(db_path):
+            with Database(db_path, project_root) as database:
+                outcomes = operation(database, project_root, args.ids)
+    except LockHeld as exc:
+        return _fail(str(exc))
+    except LockError as exc:
+        return _fail(str(exc))
+    except DatabaseError as exc:
+        return _fail(str(exc))
+    return _report_outcomes(verb, outcomes)
+
+
+def _run_issues(args: argparse.Namespace) -> int:
+    """Shared preamble for the ``khorek issues`` commands.
+
+    No config load, no LLM client, no tracer: the issue commands operate on
+    the database alone.  Exit codes: 0 for list (any result), for fully
+    processed batches, and for show; 1 for a missing database (show,
+    dismiss, delete) or unknown ids; 2 for a held lock (dismiss, delete) or
+    an unreadable database.
+    """
+    subcommand = getattr(args, "issues_command", None) or "list"
+    project_root = _resolve_project(getattr(args, "path", "."))
+    if project_root is None:
+        return EXIT_FATAL
+    db_path = _resolve_db_path(project_root, getattr(args, "db", None))
+    if not db_path.exists():
+        if subcommand == "list":
+            print("no open issues")
+            return EXIT_OK
+        print(f"khorek: no database at {db_path} (run khorek explore first)", file=sys.stderr)
+        return EXIT_ERROR
+    if subcommand == "list":
+        return _run_issues_list(args, project_root, db_path)
+    if subcommand == "show":
+        return _run_issues_show(args, project_root, db_path)
+    if subcommand == "dismiss":
+        return _run_issues_mutation(
+            args, project_root, db_path, verb="dismissed", operation=dismiss
+        )
+    if subcommand == "delete":
+        return _run_issues_mutation(
+            args, project_root, db_path, verb="deleted", operation=delete_issues
+        )
+    return _fail(f"unknown issues subcommand: {subcommand}")
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -489,6 +802,8 @@ def main(
         return _run_traces(args)
     if args.command == "reset":
         return _run_reset(args)
+    if args.command == "issues":
+        return _run_issues(args)
 
     print(f"khorek: unknown command: {args.command}", file=sys.stderr)
     return EXIT_FATAL
