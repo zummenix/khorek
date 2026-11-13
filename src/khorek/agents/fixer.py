@@ -214,6 +214,7 @@ def _build_user_prompt(
     path: str,
     content: str,
     previous_failure: str | None,
+    previous_source: str | None = None,
 ) -> str:
     lines = content.splitlines()
     count = max(1, len(lines))
@@ -236,9 +237,14 @@ def _build_user_prompt(
         "",
     ]
     if previous_failure:
+        label = (
+            "Previous review rejection from the last attempt (verification passed):"
+            if previous_source == "review"
+            else "Previous verification failure from the last attempt:"
+        )
         parts.extend(
             [
-                "Previous verification failure from the last attempt:",
+                label,
                 "----- BEGIN FAILURE -----",
                 previous_failure.strip(),
                 "----- END FAILURE -----",
@@ -283,11 +289,12 @@ class FixerAgent:
         content: str,
         *,
         previous_failure: str | None = None,
+        previous_source: str | None = None,
     ) -> FixOutcome:
         """Run one Fixer round and return its reported outcome."""
         result = self._client.run_agent(
             system_prompt=self._system_prompt,
-            user_prompt=_build_user_prompt(issue, path, content, previous_failure),
+            user_prompt=_build_user_prompt(issue, path, content, previous_failure, previous_source),
             tools=self._tools,
             max_tool_calls=self._config.max_tool_calls,
             force_tool_call=True,

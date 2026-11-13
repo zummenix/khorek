@@ -40,6 +40,12 @@ max_tool_calls = 20
 prompt = ""
 reasoning_effort = "none"
 
+[agents.reviewer]
+prompt = ""
+reasoning_effort = "low"
+max_handoffs = 2
+max_tool_calls = 20
+
 # Run in order, first failure is reported back to the Fixer.
 # Commands must be non-mutating checks: the harness does not restore side
 # effects they leave behind, only the files the Fixer touched.

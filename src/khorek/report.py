@@ -36,6 +36,7 @@ class FixStats:
     attempted: int = 0
     fixed: int = 0
     failed: int = 0
+    rejected: int = 0
     skipped_stale: int = 0
 
 
@@ -45,6 +46,7 @@ class CombinedStats:
 
     fixed: int = 0
     failed: int = 0
+    rejected: int = 0
     skipped_stale: int = 0
     remaining: int = 0
     created: int = 0
@@ -102,11 +104,11 @@ class Reporter:
     def fix_finished(self, issue_id: int, aspect_id: str, path: str) -> None:
         self.message(f"fix #{issue_id} {aspect_id} {path}: fixed")
 
-    def fix_report(self, issue: Issue, fix_summary: str) -> None:
+    def fix_report(self, issue: Issue, fix_summary: str, *, review_summary: str = "") -> None:
         """Print the per-issue problem/fix block after a successful fix.
 
         Each field is stripped first; an empty field omits its label and
-        content, and when both fields are empty nothing is printed (the bare
+        content, and when all fields are empty nothing is printed (the bare
         ``fix_finished`` line stands on its own).
         """
         lines: list[str] = []
@@ -118,6 +120,10 @@ class Reporter:
         if summary:
             lines.append("  fix:")
             lines.extend(_indented(summary))
+        review = review_summary.strip()
+        if review:
+            lines.append("  review:")
+            lines.extend(_indented(review))
         if lines:
             self.message("\n".join(lines))
 
@@ -133,6 +139,7 @@ class Reporter:
             f"{stats.attempted} attempted, "
             f"{stats.fixed} fixed, "
             f"{stats.failed} failed, "
+            f"{stats.rejected} rejected, "
             f"{stats.skipped_stale} skipped-stale, "
             f"{remaining} open issues"
         )
@@ -145,6 +152,7 @@ class Reporter:
             "explore-and-fix summary: "
             f"{stats.fixed} fixed, "
             f"{stats.failed} failed, "
+            f"{stats.rejected} rejected, "
             f"{stats.skipped_stale} skipped-stale, "
             f"{stats.created} created, "
             f"{stats.remaining} remaining, "

@@ -13,6 +13,7 @@ from tests.conftest import (
     fix_args,
     make_project,
     python_command,
+    review,
     run_cli,
     seed_issue,
     seed_state,
@@ -62,7 +63,9 @@ def test_successful_fix_marks_pair_clean_with_new_sha(tmp_path: Path, capsys) ->
     )
     seed_state(project, outcome="issues")
     seed_issue(project, description="comment contradicts the code", line_start=1, line_end=1)
-    fake = FakeModel([edit("# wrong", "# right"), fix_report("corrected the comment")])
+    fake = FakeModel(
+        [edit("# wrong", "# right"), fix_report("corrected the comment"), review(True, "good")]
+    )
 
     assert run_cli(fake, *fix_args(project)) == 0
 
@@ -76,7 +79,7 @@ def test_successful_fix_marks_pair_clean_with_new_sha(tmp_path: Path, capsys) ->
     assert fake.model_requests == 1
     output = capsys.readouterr().out
     assert "fix #1 comments src/a.py: fixed" in output
-    assert "1 attempted, 1 fixed, 0 failed, 0 skipped-stale, 0 open issues" in output
+    assert "1 attempted, 1 fixed, 0 failed, 0 rejected, 0 skipped-stale, 0 open issues" in output
 
 
 def test_successful_fix_prints_problem_and_fix_block(tmp_path: Path, capsys) -> None:
@@ -87,7 +90,9 @@ def test_successful_fix_prints_problem_and_fix_block(tmp_path: Path, capsys) -> 
     )
     seed_state(project, outcome="issues")
     seed_issue(project, description="comment contradicts the code", line_start=1, line_end=1)
-    fake = FakeModel([edit("# wrong", "# right"), fix_report("corrected the comment")])
+    fake = FakeModel(
+        [edit("# wrong", "# right"), fix_report("corrected the comment"), review(True, "good")]
+    )
 
     assert run_cli(fake, *fix_args(project)) == 0
 
@@ -116,6 +121,7 @@ def test_fix_block_reindents_multiline_content(tmp_path: Path, capsys) -> None:
         [
             edit("value = 1", "value = 2"),
             fix_report("renamed the variable\nand updated the call site"),
+            review(True, "good"),
         ]
     )
 
@@ -142,7 +148,7 @@ def test_empty_fix_summary_prints_problem_block_only(tmp_path: Path, capsys) -> 
     )
     seed_state(project, outcome="issues")
     seed_issue(project, description="the comment is inconsistent")
-    fake = FakeModel([edit("value = 1", "value = 2"), fix_report("")])
+    fake = FakeModel([edit("value = 1", "value = 2"), fix_report(""), review(True, "")])
 
     assert run_cli(fake, *fix_args(project)) == 0
 
@@ -151,6 +157,7 @@ def test_empty_fix_summary_prints_problem_block_only(tmp_path: Path, capsys) -> 
         "fix #1 comments src/a.py: fixed\n  problem:\n    the comment is inconsistent\n"
     ) in output
     assert "  fix:" not in output
+    assert "  review:" not in output
 
 
 def test_empty_description_prints_fix_block_only(tmp_path: Path, capsys) -> None:
@@ -161,13 +168,16 @@ def test_empty_description_prints_fix_block_only(tmp_path: Path, capsys) -> None
     )
     seed_state(project, outcome="issues")
     seed_issue(project, description="")
-    fake = FakeModel([edit("value = 1", "value = 2"), fix_report("applied the fix")])
+    fake = FakeModel(
+        [edit("value = 1", "value = 2"), fix_report("applied the fix"), review(True, "")]
+    )
 
     assert run_cli(fake, *fix_args(project)) == 0
 
     output = capsys.readouterr().out
     assert ("fix #1 comments src/a.py: fixed\n  fix:\n    applied the fix\n") in output
     assert "  problem:" not in output
+    assert "  review:" not in output
 
 
 def test_both_fields_empty_print_no_report_block(tmp_path: Path, capsys) -> None:
@@ -178,7 +188,7 @@ def test_both_fields_empty_print_no_report_block(tmp_path: Path, capsys) -> None
     )
     seed_state(project, outcome="issues")
     seed_issue(project, description="")
-    fake = FakeModel([edit("value = 1", "value = 2"), fix_report("")])
+    fake = FakeModel([edit("value = 1", "value = 2"), fix_report(""), review(True, "")])
 
     assert run_cli(fake, *fix_args(project)) == 0
 
@@ -186,6 +196,7 @@ def test_both_fields_empty_print_no_report_block(tmp_path: Path, capsys) -> None
     assert "fix #1 comments src/a.py: fixed\n" in output
     assert "  problem:" not in output
     assert "  fix:" not in output
+    assert "  review:" not in output
 
 
 def test_verification_failure_feeds_summary_into_next_round(tmp_path: Path, capsys) -> None:
@@ -205,13 +216,14 @@ def test_verification_failure_feeds_summary_into_next_round(tmp_path: Path, caps
             verification("the value must be 3, not 2"),
             edit("value = 2", "value = 3"),
             fix_report("changed to 3"),
+            review(True, "good"),
         ]
     )
 
     assert run_cli(fake, *fix_args(project)) == 0
 
     assert project.read("src/a.py") == "value = 3\n"
-    assert fake.chat_calls == 5
+    assert fake.chat_calls == 6
     verifier_prompt = fake.chat_requests[2]["messages"][1]["content"]
     assert '"exit_code": 1' in verifier_prompt
     round_two_prompt = fake.chat_requests[3]["messages"][1]["content"]
@@ -301,7 +313,7 @@ def test_stale_hash_issue_is_deleted_and_counted(tmp_path: Path, capsys) -> None
     assert issues(project) == []
     output = capsys.readouterr().out
     assert "skipped (stale hash)" in output
-    assert "1 attempted, 0 fixed, 0 failed, 1 skipped-stale, 0 open issues" in output
+    assert "1 attempted, 0 fixed, 0 failed, 0 rejected, 1 skipped-stale, 0 open issues" in output
 
 
 def test_stale_skip_prints_no_report_block(tmp_path: Path, capsys) -> None:
@@ -360,8 +372,10 @@ def test_hash_advance_lets_a_second_issue_in_the_same_file_be_fixed(tmp_path: Pa
         [
             edit("alpha = 1", "alpha = 2"),
             fix_report("fixed alpha"),
+            review(True, "good"),
             edit("beta = 1", "beta = 2"),
             fix_report("fixed beta"),
+            review(True, "good"),
         ]
     )
 
@@ -369,7 +383,7 @@ def test_hash_advance_lets_a_second_issue_in_the_same_file_be_fixed(tmp_path: Pa
 
     assert first != second
     assert project.read("src/a.py") == "alpha = 2\nbeta = 2\n"
-    assert fake.chat_calls == 4
+    assert fake.chat_calls == 6
     assert issues(project) == []
     row = state(project)
     assert row is not None
@@ -389,7 +403,9 @@ def test_fix_advances_sibling_hash_but_leaves_state_while_issues_remain(
     old_sha = sha256_file(project.root / "src/a.py")
     first = seed_issue(project, description="alpha is wrong", line_start=1, line_end=1)
     second = seed_issue(project, description="beta is wrong", line_start=2, line_end=2)
-    fake = FakeModel([edit("alpha = 1", "alpha = 2"), fix_report("fixed alpha")])
+    fake = FakeModel(
+        [edit("alpha = 1", "alpha = 2"), fix_report("fixed alpha"), review(True, "good")]
+    )
 
     assert run_cli(fake, *fix_args(project, "--limit", "1")) == 1
 
@@ -416,7 +432,7 @@ def test_truncated_state_row_is_deleted_after_successful_fix(tmp_path: Path) -> 
     )
     seed_state(project, outcome="truncated")
     seed_issue(project)
-    fake = FakeModel([edit("value = 1", "value = 2"), fix_report()])
+    fake = FakeModel([edit("value = 1", "value = 2"), fix_report(), review(True, "good")])
 
     assert run_cli(fake, *fix_args(project)) == 0
 
@@ -463,7 +479,7 @@ def test_limit_counts_stale_skips(tmp_path: Path, capsys) -> None:
     stored = issues(project)
     assert [entry.path for entry in stored] == ["src/b.py"]
     output = capsys.readouterr().out
-    assert "1 attempted, 0 fixed, 0 failed, 1 skipped-stale, 1 open issues" in output
+    assert "1 attempted, 0 fixed, 0 failed, 0 rejected, 1 skipped-stale, 1 open issues" in output
 
 
 def test_fixed_false_ends_attempts_without_verification(tmp_path: Path, capsys) -> None:
@@ -583,6 +599,7 @@ def test_verifier_failure_falls_back_to_raw_failure_output(tmp_path: Path, capsy
             text_message("still thinking"),
             edit("value = 2", "value = 3"),
             fix_report("changed to 3"),
+            review(True, "good"),
         ]
     )
 
@@ -610,6 +627,7 @@ def test_one_failed_issue_does_not_abort_the_run(tmp_path: Path, capsys) -> None
             fix_report(fixed=True, summary="pretend"),
             edit("beta = 1", "beta = 2"),
             fix_report("fixed beta"),
+            review(True, "good"),
         ]
     )
 
@@ -626,3 +644,190 @@ def test_one_failed_issue_does_not_abort_the_run(tmp_path: Path, capsys) -> None
     assert "1 failed" in output
     assert "1 open issues" in output
     assert first != second
+
+
+def test_review_rejection_feeds_reason_back_and_retries(tmp_path: Path, capsys) -> None:
+    project = make_project(
+        tmp_path / "project",
+        files={"src/a.py": "# wrong\nvalue = 1\n"},
+        verify=TRUE_VERIFY,
+    )
+    seed_state(project, outcome="issues")
+    seed_issue(project, description="comment contradicts the code", line_start=1, line_end=1)
+    fake = FakeModel(
+        [
+            edit("# wrong", "# partly"),
+            fix_report("partially fixed"),
+            review(False, "the change is not minimal"),
+            edit("# partly", "# right"),
+            fix_report("fixed properly"),
+            review(True, "looks good"),
+        ]
+    )
+
+    assert run_cli(fake, *fix_args(project)) == 0
+
+    assert project.read("src/a.py") == "# right\nvalue = 1\n"
+    assert issues(project) == []
+    row = state(project)
+    assert row is not None
+    assert row.outcome == "clean"
+
+    # The round-two fixer gets the rejection reason under a review source label.
+    assert fake.chat_calls == 6
+    round_two_prompt = fake.chat_requests[3]["messages"][1]["content"]
+    assert (
+        "Previous review rejection from the last attempt (verification passed):" in round_two_prompt
+    )
+    assert "the change is not minimal" in round_two_prompt
+
+    output = capsys.readouterr().out
+    assert "review rejected (handoff 1/2)" in output
+    assert "fix #1 comments src/a.py: fixed" in output
+    assert ("  fix:\n    fixed properly\n  review:\n    looks good\n") in output
+    assert "1 attempted, 1 fixed, 0 failed, 1 rejected, 0 skipped-stale, 0 open issues" in output
+
+
+def test_rejection_exhausts_default_max_handoffs(tmp_path: Path, capsys) -> None:
+    project = make_project(
+        tmp_path / "project",
+        files={"src/a.py": "value = 1\n"},
+        verify=TRUE_VERIFY,
+    )
+    seed_state(project, outcome="issues")
+    issue_id = seed_issue(project, description="value is wrong", line_start=1, line_end=1)
+    fake = FakeModel(
+        [
+            edit("value = 1", "value = 2"),
+            fix_report("changed to 2"),
+            review(False, "reason one"),
+            edit("value = 2", "value = 3"),
+            fix_report("changed to 3"),
+            review(False, "reason two"),
+        ]
+    )
+
+    assert run_cli(fake, *fix_args(project)) == 1
+
+    assert project.read("src/a.py") == "value = 1\n"
+    stored = issues(project)
+    assert len(stored) == 1
+    assert stored[0].id == issue_id
+    assert stored[0].retry_count == 1
+    assert "reason two" in (stored[0].last_error or "")
+
+    output = capsys.readouterr().out
+    assert "review rejected (handoff 1/2)" in output
+    assert "review rejected (handoff 2/2)" in output
+    assert "1 attempted, 0 fixed, 1 failed, 2 rejected, 0 skipped-stale, 1 open issues" in output
+
+
+def test_review_rejection_fails_when_rounds_exhaust_max_attempts(tmp_path: Path, capsys) -> None:
+    project = make_project(
+        tmp_path / "project",
+        files={"src/a.py": "value = 1\n"},
+        verify=expect_verify_code(
+            "import sys; raise SystemExit(0 if 'value = 3' in open('src/a.py').read() else 1)"
+        ),
+        agents={"fixer": {"max_attempts": 2}},
+    )
+    seed_state(project, outcome="issues")
+    issue_id = seed_issue(project, description="value must be 3", line_start=1, line_end=1)
+    fake = FakeModel(
+        [
+            edit("value = 1", "value = 2"),
+            fix_report("changed to 2"),
+            verification("the value must be 3, not 2"),
+            edit("value = 2", "value = 3"),
+            fix_report("changed to 3"),
+            review(False, "still not minimal"),
+        ]
+    )
+
+    assert run_cli(fake, *fix_args(project)) == 1
+
+    # The verify failure (round 1) plus the review rejection (round 2) together
+    # reach max_attempts=2, so the issue fails even though handoffs (1) < 2.
+    assert project.read("src/a.py") == "value = 1\n"
+    stored = issues(project)
+    assert len(stored) == 1
+    assert stored[0].id == issue_id
+    assert stored[0].retry_count == 1
+    assert "still not minimal" in (stored[0].last_error or "")
+
+    output = capsys.readouterr().out
+    assert "verification failed (round 1/2)" in output
+    assert "review rejected (handoff 1/2)" in output
+    assert "1 attempted, 0 fixed, 1 failed, 1 rejected, 0 skipped-stale, 1 open issues" in output
+
+
+def test_reviewer_error_treats_fix_as_approved(tmp_path: Path, capsys) -> None:
+    project = make_project(
+        tmp_path / "project",
+        files={"src/a.py": "# wrong\nvalue = 1\n"},
+        verify=TRUE_VERIFY,
+    )
+    seed_state(project, outcome="issues")
+    seed_issue(project, description="comment contradicts the code", line_start=1, line_end=1)
+    fake = FakeModel(
+        [
+            edit("# wrong", "# right"),
+            fix_report("fixed"),
+            text_message("thinking"),
+            text_message("still thinking"),
+        ]
+    )
+
+    assert run_cli(fake, *fix_args(project)) == 0
+
+    assert project.read("src/a.py") == "# right\nvalue = 1\n"
+    assert issues(project) == []
+    row = state(project)
+    assert row is not None
+    assert row.outcome == "clean"
+
+    assert fake.chat_calls == 4
+    output = capsys.readouterr().out
+    assert "reviewer error [no_tool_call]" in output
+    assert "treating as approved" in output
+    assert "fix #1 comments src/a.py: fixed" in output
+    assert "  review:" not in output
+    assert "1 attempted, 1 fixed, 0 failed, 0 rejected, 0 skipped-stale, 0 open issues" in output
+
+
+def test_rejected_counter_accumulates_across_issues(tmp_path: Path, capsys) -> None:
+    project = make_project(
+        tmp_path / "project",
+        files={"src/a.py": "alpha = 1\nbeta = 1\n"},
+        verify=TRUE_VERIFY,
+    )
+    seed_state(project, outcome="issues")
+    seed_issue(project, description="alpha is wrong", line_start=1, line_end=1)
+    seed_issue(project, description="beta is wrong", line_start=2, line_end=2)
+    fake = FakeModel(
+        [
+            # first issue: one rejection, then approved
+            edit("alpha = 1", "alpha = 2"),
+            fix_report("fixed alpha"),
+            review(False, "issue one not minimal"),
+            edit("alpha = 2", "alpha = 3"),
+            fix_report("fixed alpha properly"),
+            review(True, "good"),
+            # second issue: one rejection, then approved
+            edit("beta = 1", "beta = 2"),
+            fix_report("fixed beta"),
+            review(False, "issue two not minimal"),
+            edit("beta = 2", "beta = 3"),
+            fix_report("fixed beta properly"),
+            review(True, "good"),
+        ]
+    )
+
+    assert run_cli(fake, *fix_args(project)) == 0
+
+    assert project.read("src/a.py") == "alpha = 3\nbeta = 3\n"
+    assert issues(project) == []
+    assert fake.chat_calls == 12
+
+    output = capsys.readouterr().out
+    assert "2 attempted, 2 fixed, 0 failed, 2 rejected, 0 skipped-stale, 0 open issues" in output

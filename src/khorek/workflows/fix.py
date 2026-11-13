@@ -1,16 +1,18 @@
-"""Fix workflow: dequeue open issues, fix, verify, and roll back on failure.
+"""Fix workflow: dequeue open issues, fix, verify, review, and roll back on failure.
 
 Implemented as a LangGraph ``StateGraph`` with plain function nodes and
-conditional edges (``select -> fix -> verify -> success|fail -> select``).  No
-checkpointer: the SQLite database is the source of truth.
+conditional edges (``select -> fix -> verify -> review -> success|fail ->
+select``).  No checkpointer: the SQLite database is the source of truth.
 
 Queues and round semantics are fixed as follows:
 
 * the queue is ordered by ``retry_count ASC, severity DESC, created_at ASC``
   and computed once per run;
 * a ``fixed: false`` report or a Fixer agent error ends the issue's attempts
-  immediately; only a *verification* failure consumes one of the remaining
-  rounds and feeds the Verifier summary into the next round;
+  immediately; a *verification* failure consumes one of the remaining rounds and
+  feeds the Verifier summary into the next round, and a *review* rejection (the
+  model gate that runs only after the checks pass) consumes one round and one
+  hand-off and feeds the Reviewer's reason into the next round;
 * a ``fixed: true`` report that leaves every snapshotted file byte-identical is
   treated as a failed fix;
 * success deletes the issue, advances the stored hash of sibling open issues on
@@ -29,9 +31,11 @@ from typing import Any, cast
 from langgraph.graph import END, StateGraph
 
 from khorek.agents.fixer import FixerAgent
+from khorek.agents.reviewer import ReviewerAgent
 from khorek.agents.verifier import VerifierAgent
 from khorek.context import AppContext
 from khorek.db import Database, Issue
+from khorek.diff import format_changes
 from khorek.files import PathEscapeError, read_text_file, sha256_file
 from khorek.llm import AgentError
 from khorek.report import FixStats
@@ -103,11 +107,16 @@ class FixState:
     lines_after: int = 1
     rounds: int = 0
     previous_failure: str | None = None
+    previous_source: str | None = None
     verified: bool = False
     fix_fixed: bool = False
     fix_summary: str = ""
     fix_error: str | None = None
     last_error: str | None = None
+    handoffs: int = 0
+    review_approved: bool = False
+    review_summary: str = ""
+    review_error: str | None = None
 
 
 class _FixWorkflow:
@@ -126,8 +135,15 @@ class _FixWorkflow:
         self.queue = build_queue(app.database, exclude_ids=exclude_ids)
         self.attempted_ids = attempted_ids if attempted_ids is not None else set()
         self.max_attempts = app.config.agents.fixer.max_attempts
+        self.max_handoffs = app.config.agents.reviewer.max_handoffs
         self.verifier = VerifierAgent(app.llm, config=app.config.agents.verifier)
-        self.recursion_limit = 100 + len(self.queue) * (2 * self.max_attempts + 4)
+        self.reviewer = ReviewerAgent(
+            app.llm,
+            project_root=app.project_root,
+            config=app.config.agents.reviewer,
+            defaults=app.config.defaults,
+        )
+        self.recursion_limit = 100 + len(self.queue) * (3 * self.max_attempts + 6)
 
     # -- helpers -------------------------------------------------------
 
@@ -148,11 +164,16 @@ class _FixWorkflow:
             "lines_after": 1,
             "rounds": 0,
             "previous_failure": None,
+            "previous_source": None,
             "verified": False,
             "fix_fixed": False,
             "fix_summary": "",
             "fix_error": None,
             "last_error": None,
+            "handoffs": 0,
+            "review_approved": False,
+            "review_summary": "",
+            "review_error": None,
         }
         reset.update(updates)
         return reset
@@ -224,11 +245,16 @@ class _FixWorkflow:
             "content": content,
             "rounds": 0,
             "previous_failure": None,
+            "previous_source": None,
             "verified": False,
             "fix_fixed": False,
             "fix_summary": "",
             "fix_error": None,
             "last_error": None,
+            "handoffs": 0,
+            "review_approved": False,
+            "review_summary": "",
+            "review_error": None,
         }
 
     def _fix(self, state: FixState) -> dict[str, Any]:
@@ -255,6 +281,7 @@ class _FixWorkflow:
                 issue.path,
                 content,
                 previous_failure=state.previous_failure,
+                previous_source=state.previous_source,
             )
         except AgentError as exc:
             return {
@@ -325,7 +352,51 @@ class _FixWorkflow:
             "verified": False,
             "rounds": rounds,
             "previous_failure": summary,
+            "previous_source": "verification",
             "last_error": summary,
+        }
+
+    def _review(self, state: FixState) -> dict[str, Any]:
+        issue = state.current
+        snapshotter = state.snapshotter
+        assert issue is not None and snapshotter is not None
+
+        diff = format_changes(self.app.project_root, snapshotter)
+        verify_status = [command.cmd for command in self.app.config.verify]
+
+        try:
+            outcome = self.reviewer.review(issue, diff, verify_status)
+        except AgentError as exc:
+            self.app.reporter.message(
+                f"fix #{issue.id} {issue.aspect_id} {issue.path}: "
+                f"reviewer error [{exc.code}]: {exc}; treating as approved"
+            )
+            return {
+                "review_approved": True,
+                "review_summary": "",
+                "review_error": str(exc),
+            }
+
+        if outcome.approved:
+            return {
+                "review_approved": True,
+                "review_summary": outcome.summary,
+            }
+
+        handoffs = state.handoffs + 1
+        self.app.reporter.message(
+            f"fix #{issue.id} {issue.aspect_id} {issue.path}: "
+            f"review rejected (handoff {handoffs}/{self.max_handoffs})"
+        )
+        summary = trim_error(outcome.summary)
+        return {
+            "review_approved": False,
+            "rounds": state.rounds + 1,
+            "handoffs": handoffs,
+            "previous_failure": summary,
+            "previous_source": "review",
+            "last_error": summary,
+            "stats": replace(state.stats, rejected=state.stats.rejected + 1),
         }
 
     def _success(self, state: FixState) -> dict[str, Any]:
@@ -356,7 +427,7 @@ class _FixWorkflow:
                     database.upsert_state(issue.aspect_id, issue.path, state.new_sha, "clean")
 
         self.app.reporter.fix_finished(issue.id, issue.aspect_id, issue.path)
-        self.app.reporter.fix_report(issue, state.fix_summary)
+        self.app.reporter.fix_report(issue, state.fix_summary, review_summary=state.review_summary)
         return {
             "stats": replace(state.stats, fixed=state.stats.fixed + 1),
             **self._reset_issue_fields(),
@@ -400,8 +471,15 @@ class _FixWorkflow:
 
     def _route_verify(self, state: FixState) -> str:
         if state.verified:
-            return "success"
+            return "review"
         if state.rounds >= self.max_attempts:
+            return "fail"
+        return "fix"
+
+    def _route_review(self, state: FixState) -> str:
+        if state.review_approved:
+            return "success"
+        if state.rounds >= self.max_attempts or state.handoffs >= self.max_handoffs:
             return "fail"
         return "fix"
 
@@ -413,6 +491,7 @@ class _FixWorkflow:
         graph.add_node("select", self._select)
         graph.add_node("fix", self._fix)
         graph.add_node("verify", self._verify)
+        graph.add_node("review", self._review)
         graph.add_node("success", self._success)
         graph.add_node("fail", self._fail)
         graph.set_entry_point("prepare")
@@ -430,6 +509,11 @@ class _FixWorkflow:
         graph.add_conditional_edges(
             "verify",
             self._route_verify,
+            {"review": "review", "fix": "fix", "fail": "fail"},
+        )
+        graph.add_conditional_edges(
+            "review",
+            self._route_review,
             {"success": "success", "fix": "fix", "fail": "fail"},
         )
         graph.add_edge("success", "select")

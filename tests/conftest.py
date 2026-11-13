@@ -51,6 +51,7 @@ DEFAULT_AGENTS: dict[str, dict[str, Any]] = {
     "explorer": {"prompt": "", "max_tool_calls": 20},
     "fixer": {"prompt": "", "max_attempts": 3, "max_tool_calls": 20},
     "verifier": {"prompt": ""},
+    "reviewer": {"prompt": "", "reasoning_effort": "low", "max_handoffs": 2, "max_tool_calls": 20},
 }
 
 DEFAULT_ASPECT: dict[str, Any] = {
@@ -84,6 +85,11 @@ def tool_message(
 def text_message(text: str) -> Message:
     """Build a plain assistant text message."""
     return {"role": "assistant", "content": text}
+
+
+def review(approved: bool, summary: str) -> Message:
+    """Build a ``report_review`` tool call (the Reviewer's terminal tool)."""
+    return tool_message("report_review", {"approved": approved, "summary": summary})
 
 
 def _completion(message: Message, model: str) -> dict[str, Any]:

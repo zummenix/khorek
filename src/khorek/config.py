@@ -20,6 +20,7 @@ DEFAULT_MAX_PROMPT_BYTES = 400_000
 DEFAULT_MAX_TOOL_OUTPUT_BYTES = 16_000
 DEFAULT_MAX_CYCLES = 25
 DEFAULT_MAX_HANDOFFS = 3
+DEFAULT_REVIEW_MAX_HANDOFFS = 2
 DEFAULT_MAX_TOOL_CALLS = 20
 DEFAULT_MAX_ATTEMPTS = 3
 DEFAULT_TEMPERATURE = 0.2
@@ -112,6 +113,15 @@ class VerifierAgentConfig(_StrictModel):
     reasoning_effort: str | None = None  # None = inherit [llm].reasoning_effort
 
 
+class ReviewerAgentConfig(_StrictModel):
+    """Reviewer settings (used by the fix workflow)."""
+
+    prompt: str = ""
+    reasoning_effort: str | None = None  # None = inherit [llm].reasoning_effort
+    max_handoffs: int = Field(default=DEFAULT_REVIEW_MAX_HANDOFFS, ge=0)
+    max_tool_calls: int = Field(default=DEFAULT_MAX_TOOL_CALLS, gt=0)
+
+
 class AgentsConfig(_StrictModel):
     """Per-agent configuration sections."""
 
@@ -119,6 +129,7 @@ class AgentsConfig(_StrictModel):
     explorer: ExplorerAgentConfig = Field(default_factory=ExplorerAgentConfig)
     fixer: FixerAgentConfig = Field(default_factory=FixerAgentConfig)
     verifier: VerifierAgentConfig = Field(default_factory=VerifierAgentConfig)
+    reviewer: ReviewerAgentConfig = Field(default_factory=ReviewerAgentConfig)
 
 
 class VerifyCommand(_StrictModel):
@@ -264,11 +275,13 @@ __all__ = [
     "Config",
     "ConfigError",
     "DEFAULT_MAX_TOKENS",
+    "DEFAULT_REVIEW_MAX_HANDOFFS",
     "DefaultsConfig",
     "ExplorerAgentConfig",
     "FixerAgentConfig",
     "LLMConfig",
     "ObserveConfig",
+    "ReviewerAgentConfig",
     "VerifyCommand",
     "VerifierAgentConfig",
     "load_config",

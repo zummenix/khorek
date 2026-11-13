@@ -23,6 +23,14 @@ def test_minimal_config_applies_documented_defaults(project) -> None:
     assert [aspect.id for aspect in config.aspects] == ["comments"]
 
 
+def test_reviewer_defaults(project) -> None:
+    config = load_config(project.root)
+    assert config.agents.reviewer.prompt == ""
+    assert config.agents.reviewer.reasoning_effort == "low"
+    assert config.agents.reviewer.max_handoffs == 2
+    assert config.agents.reviewer.max_tool_calls == 20
+
+
 def test_config_path_override(tmp_path: Path) -> None:
     project = make_project(tmp_path / "project")
     other = tmp_path / "elsewhere.toml"

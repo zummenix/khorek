@@ -25,8 +25,8 @@ with the smallest correct change, and then report the result.
 - `read_file(path, offset?, limit?)` reads a project file when you need a fresh
   copy. *offset* is the 1-based first line to read and *limit* is the maximum
   number of lines; both are optional and default to the whole file.
-- On a retry you may be given the previous verification failure. Address that
-  failure specifically.
+- On a retry you may be given the previous failure — a verification failure or a
+  review rejection (where the checks passed). Address that specific failure.
 - Finish by calling `report_fix_result(fixed, summary)`. Call `fixed=true` only
   when you actually changed the file on disk. If you cannot fix the issue,
   call it with `fixed=false` and explain why in `summary`. Never claim a fix

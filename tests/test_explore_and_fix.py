@@ -11,6 +11,7 @@ from tests.conftest import (
     Project,
     explore_and_fix_args,
     make_project,
+    review,
     run_cli,
     seed_issue,
     seed_state,
@@ -71,17 +72,24 @@ def test_queue_is_drained_before_exploring(tmp_path: Path, capsys) -> None:
     seed_state(project, outcome="issues")
     issue_id = seed_issue(project)
     # src/b.py has no state row yet, so explore really calls the Aspect agent
-    # for it after the queued issue is fixed.
-    fake = FakeModel([edit("value = 1", "value = 2"), fix_report("fixed it"), report()])
+    # for it after the queued issue is fixed (and reviewed).
+    fake = FakeModel(
+        [
+            edit("value = 1", "value = 2"),
+            fix_report("fixed it"),
+            review(True, "good"),
+            report(),
+        ]
+    )
 
     assert run_cli(fake, *explore_and_fix_args(project)) == 0
 
-    # Fixer first, Aspect agent second: the queue is consumed before exploring.
-    assert fake.chat_calls == 3
+    # Fixer first, Aspect agent last: the queue is consumed before exploring.
+    assert fake.chat_calls == 4
     assert "edit_file" in tool_names(fake.chat_requests[0])
     assert "report_issues" not in tool_names(fake.chat_requests[0])
-    assert "report_issues" in tool_names(fake.chat_requests[2])
-    assert "edit_file" not in tool_names(fake.chat_requests[2])
+    assert "report_issues" in tool_names(fake.chat_requests[3])
+    assert "edit_file" not in tool_names(fake.chat_requests[3])
     assert "Issue #" in fake.chat_requests[0]["messages"][1]["content"]
 
     assert project.read("src/a.py") == "value = 2\n"
@@ -104,7 +112,9 @@ def test_fix_block_streams_and_unified_summary_stays_last(tmp_path: Path, capsys
     )
     seed_state(project, outcome="issues")
     issue_id = seed_issue(project)
-    fake = FakeModel([edit("value = 1", "value = 2"), fix_report("fixed it"), report()])
+    fake = FakeModel(
+        [edit("value = 1", "value = 2"), fix_report("fixed it"), review(True, "good"), report()]
+    )
 
     assert run_cli(fake, *explore_and_fix_args(project)) == 0
 
@@ -155,6 +165,7 @@ def test_limit_caps_created_issues_independently(tmp_path: Path, capsys) -> None
             report(issue("a issue")),
             edit("a = 1", "a = 2"),
             fix_report("fixed a"),
+            review(True, "good"),
         ]
     )
 
@@ -162,7 +173,7 @@ def test_limit_caps_created_issues_independently(tmp_path: Path, capsys) -> None
 
     # One explore call only: the creation budget stops exploration after the
     # first pair, and the second file is never touched.
-    assert fake.chat_calls == 3
+    assert fake.chat_calls == 4
     assert "report_issues" in tool_names(fake.chat_requests[0])
     assert "edit_file" in tool_names(fake.chat_requests[1])
     assert state(project, "src/b.py") is None
@@ -180,12 +191,12 @@ def test_limit_caps_attempted_issues_independently(tmp_path: Path, capsys) -> No
     )
     first = seed_issue(project, path="src/a.py", description="a is wrong")
     second = seed_issue(project, path="src/b.py", description="b is wrong")
-    fake = FakeModel([edit("a = 1", "a = 2"), fix_report("fixed a")])
+    fake = FakeModel([edit("a = 1", "a = 2"), fix_report("fixed a"), review(True, "good")])
 
     assert run_cli(fake, *explore_and_fix_args(project, "--limit", "1")) == 1
 
     # The attempt budget is spent, so the run stops before exploring at all.
-    assert fake.chat_calls == 2
+    assert fake.chat_calls == 3
     assert all("report_issues" not in tool_names(call) for call in fake.chat_requests)
     stored = issues(project)
     assert [entry.id for entry in stored] == [second]
@@ -227,13 +238,14 @@ def test_max_cycles_guard_stops_a_model_that_keeps_reporting(tmp_path: Path, cap
             report(issue("first wrong comment"), issue("second wrong comment")),
             edit("value = 1", "value = 2"),
             fix_report("fixed once"),
+            review(True, "good"),
             report(issue("first wrong comment"), issue("second wrong comment")),
         ]
     )
 
     assert run_cli(fake, *explore_and_fix_args(project)) == 1
 
-    assert fake.chat_calls == 4
+    assert fake.chat_calls == 5
     output = capsys.readouterr().out
     assert "max_cycles=2" in output
     assert "2 cycle(s)" in output
@@ -292,7 +304,7 @@ def test_combined_summary_reports_unified_counters_and_pruned(tmp_path: Path, ca
 
     output = capsys.readouterr().out
     assert (
-        "explore-and-fix summary: 0 fixed, 0 failed, 0 skipped-stale, "
+        "explore-and-fix summary: 0 fixed, 0 failed, 0 rejected, 0 skipped-stale, "
         "0 created, 0 remaining, 2 pruned, 0 cycle(s)"
     ) in output
     assert fake.chat_calls == 1

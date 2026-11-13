@@ -29,6 +29,15 @@ class _Snapshot:
     original: bytes | None
 
 
+@dataclass(frozen=True)
+class FileChange:
+    """A captured path whose current state differs from the original."""
+
+    path: Path
+    existed: bool
+    original: bytes | None
+
+
 class Snapshotter:
     """Captures and restores originals for a single issue attempt."""
 
@@ -76,18 +85,37 @@ class Snapshotter:
 
     def has_changes(self) -> bool:
         """Return ``True`` when any captured path differs from its original."""
+        return bool(self.changes())
+
+    def changes(self) -> list[FileChange]:
+        """Return the captured paths whose current state differs from the original.
+
+        A captured path is *changed* when it existed and its bytes now differ
+        (an unreadable path counts as changed), or when it did not exist and the
+        path now exists or is a symlink.
+        """
+        changed: list[FileChange] = []
         for snapshot in self._snapshots:
-            if snapshot.existed:
-                assert snapshot.original is not None
-                try:
-                    current = snapshot.path.read_bytes()
-                except OSError:
-                    return True
-                if current != snapshot.original:
-                    return True
-            elif snapshot.path.exists() or snapshot.path.is_symlink():
+            if self._is_changed(snapshot):
+                changed.append(
+                    FileChange(
+                        path=snapshot.path,
+                        existed=snapshot.existed,
+                        original=snapshot.original,
+                    )
+                )
+        return changed
+
+    @staticmethod
+    def _is_changed(snapshot: _Snapshot) -> bool:
+        if snapshot.existed:
+            assert snapshot.original is not None
+            try:
+                current = snapshot.path.read_bytes()
+            except OSError:
                 return True
-        return False
+            return current != snapshot.original
+        return snapshot.path.exists() or snapshot.path.is_symlink()
 
 
-__all__ = ["Snapshotter"]
+__all__ = ["FileChange", "Snapshotter"]

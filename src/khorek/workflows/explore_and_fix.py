@@ -80,6 +80,7 @@ def run_explore_and_fix(app: AppContext, limit: int = 0, *, pruned: int = 0) -> 
         attempted += fix_stats.attempted
         stats.fixed += fix_stats.fixed
         stats.failed += fix_stats.failed
+        stats.rejected += fix_stats.rejected
         stats.skipped_stale += fix_stats.skipped_stale
 
         if limit > 0 and attempted >= limit:

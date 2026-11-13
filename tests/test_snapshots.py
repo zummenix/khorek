@@ -119,3 +119,30 @@ def test_symlinked_parent_escaping_the_root_is_rejected(tmp_path: Path) -> None:
     snapshotter = Snapshotter(root)
     with pytest.raises(PathEscapeError, match="escapes the project root"):
         snapshotter.capture(link / "a.py")
+
+
+def test_changes_reports_modified_and_created_files(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    src = root / "src"
+    src.mkdir(parents=True)
+    target = src / "a.py"
+    created = src / "new.py"
+    untouched = src / "b.py"
+    target.write_bytes(b"original = 1\n")
+    untouched.write_bytes(b"same\n")
+
+    snapshotter = Snapshotter(root)
+    snapshotter.capture(target)
+    snapshotter.capture(created)
+    snapshotter.capture(untouched)
+    assert snapshotter.changes() == []
+
+    target.write_bytes(b"changed = 2\n")
+    created.write_text("created\n", encoding="utf-8")
+
+    by_path = {change.path: change for change in snapshotter.changes()}
+    assert set(by_path) == {target, created}
+    assert by_path[target].existed is True
+    assert by_path[target].original == b"original = 1\n"
+    assert by_path[created].existed is False
+    assert by_path[created].original is None
