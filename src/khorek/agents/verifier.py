@@ -1,8 +1,8 @@
 """Verifier agent: turn failing command output into a Fixer-friendly summary.
 
 The Verifier never decides pass/fail.  The harness runs the configured commands
-and derives ``passed`` from the exit codes; the Verifier only distils the first
-failure's output into an actionable summary for the Fixer's next round.  Its
+and derives ``passed`` from the exit codes; the Verifier only distils the
+failures' output into an actionable summary for the Fixer's next round.  Its
 structured ``report_verification`` payload is therefore advisory data with no
 authority over the workflow result.
 """
@@ -47,8 +47,8 @@ def report_verification_tool() -> Tool:
     return Tool(
         name="report_verification",
         description=(
-            "Report a short, actionable summary of the first failing verification "
-            "command for the fixer agent. Copy the failure entries you were given; "
+            "Report a short, actionable summary of the failing verification "
+            "commands for the fixer agent. Copy the failure entries you were given; "
             "do not invent commands or results. This must be your final call."
         ),
         parameters={
