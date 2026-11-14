@@ -57,3 +57,17 @@ id = "comments"
 prompt = "Look at the comments and find those that are out of sync or contain inconsistencies. Assume code is right."
 files = ["src/**/*.py"]
 max_issues_per_file = 2
+
+[[aspects]]
+id = "documentation"
+prompt = """
+Review the documentation file. Check every factual claim it makes about the
+codebase — commands, flags, config keys, defaults, etc. — against the actual
+code. Report only claims the code factually contradicts: stale names, wrong
+commands or flags, incorrect defaults, or references to code that no longer
+exists. Verify each suspect claim by reading the relevant code before
+reporting; never report based on the document alone. Do not report features
+that are missing or under-documented, and do not report wording or style
+preferences. Assume the code is correct."""
+files = ["README.md", "docs/*.md", "AGENTS.md"]
+max_issues_per_file = 2
