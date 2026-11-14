@@ -13,6 +13,7 @@ import httpx
 from khorek.config import Config, ConfigError, load_config
 from khorek.context import AppContext
 from khorek.db import Database, DatabaseError, default_db_path
+from khorek.init import Answers, InitError, collect_answers, init_config_path, render_init_config
 from khorek.issues import (
     IssueOutcome,
     dismiss,
@@ -158,6 +159,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--db",
         default=None,
         help="database file to delete (default: ~/.khorek/<slug>.db)",
+    )
+
+    init = subparsers.add_parser(
+        "init",
+        help="write a canonical khorek.toml interactively",
+        description="Interactively gather the basic settings and dump a canonical "
+        "khorek.toml into the destination directory.",
+    )
+    init.add_argument(
+        "-p",
+        "--path",
+        default=".",
+        help="destination directory for the dumped config (default: current directory)",
+    )
+    init.add_argument(
+        "--config-name",
+        default="khorek",
+        help="name of the dumped config file; a .toml suffix is added if missing (default: khorek)",
     )
 
     _build_issues_parser(subparsers)
@@ -604,6 +623,40 @@ def _run_reset(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _run_init(args: argparse.Namespace, answers: Answers | None = None) -> int:
+    """Run the interactive ``khorek init`` wizard and dump a canonical config."""
+    destination = Path(args.path).expanduser().resolve()
+    if destination.exists() and not destination.is_dir():
+        return _fail(f"not a directory: {destination}")
+    if not args.config_name or Path(args.config_name).name != args.config_name:
+        return _fail(f"invalid --config-name: {args.config_name!r}")
+    target = init_config_path(destination, args.config_name)
+    try:
+        if target.exists():
+            return _fail(
+                f"refusing to overwrite existing config: {target} (use --config-name for a fresh file)"
+            )
+    except OSError as exc:
+        return _fail(f"cannot check existing config: {target}: {exc}")
+
+    try:
+        collected = collect_answers(answers=answers)
+    except (EOFError, KeyboardInterrupt):
+        print("khorek: init aborted", file=sys.stderr)
+        return EXIT_ERROR
+    except InitError as exc:
+        return _fail(str(exc))
+
+    try:
+        destination.mkdir(parents=True, exist_ok=True)
+        target.write_text(render_init_config(collected), encoding="utf-8")
+    except OSError as exc:
+        return _fail(f"cannot write {target}: {exc}")
+
+    print(f"khorek: wrote {target}")
+    return EXIT_OK
+
+
 def _issue_filters(
     args: argparse.Namespace,
 ) -> tuple[Sequence[str] | None, Sequence[str] | None, Sequence[str] | None]:
@@ -774,11 +827,13 @@ def main(
     argv: Sequence[str] | None = None,
     *,
     transport: httpx.BaseTransport | None = None,
+    answers: Answers | None = None,
 ) -> int:
     """Run the CLI and return the process exit code.
 
     ``transport`` is the in-process test seam: tests inject an
-    ``httpx.MockTransport`` and never touch a real model.
+    ``httpx.MockTransport`` and never touch a real model.  ``answers`` is the
+    prompt seam for the interactive commands; ``input()`` is the default.
     """
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -791,6 +846,9 @@ def main(
     if isinstance(limit, int) and limit < 0:
         print("khorek: --limit must be >= 0 (0 = unlimited)", file=sys.stderr)
         return EXIT_FATAL
+
+    if args.command == "init":
+        return _run_init(args, answers)
 
     if args.command == "explore":
         return _run_explore(args, transport)

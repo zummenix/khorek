@@ -27,6 +27,7 @@ DEFAULT_TEMPERATURE = 0.2
 DEFAULT_CALL_TIMEOUT = 600.0
 DEFAULT_MAX_TOKENS = 8192
 DEFAULT_KEEP_TRACES = 30
+DEFAULT_VERIFY_TIMEOUT = 120.0
 
 # Environment overrides for the [llm] section; the environment wins.
 ENV_BASE_URL = "KHOREK_LLM_BASE_URL"
@@ -131,7 +132,7 @@ class VerifyCommand(_StrictModel):
     """One non-mutating validation command run after a fix."""
 
     cmd: str = Field(min_length=1)
-    timeout: float = Field(default=120.0, gt=0.0)
+    timeout: float = Field(default=DEFAULT_VERIFY_TIMEOUT, gt=0.0)
 
 
 class AspectConfig(_StrictModel):

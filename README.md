@@ -49,6 +49,21 @@ uv run khorek fix       # fix open issues one at a time, verifying each
 
 Review what was found with `khorek issues list`.
 
+### First setup
+
+`khorek init` interactively gathers the basic settings and dumps a canonical
+`khorek.toml` into the destination directory:
+
+```bash
+uv run khorek init                    # dump ./khorek.toml
+uv run khorek init -p .               # dump into another directory
+uv run khorek init --config-name khorek.local   # dump khorek.local.toml
+```
+
+It asks for the LLM base URL (skippable, defaults to a local Ollama server), the
+model name (required), a verify command (required, e.g. `ruff format --check .`),
+and whether to add the `comments` aspect. Existing configs are never overwritten.
+
 ## Configuration
 
 Aspects, agents, limits and verifier commands. Take a look at
