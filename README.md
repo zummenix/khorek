@@ -31,38 +31,41 @@ by a fixer agent, and a verifier loop re-checks the fix before it's accepted.
 Requires [uv](https://docs.astral.sh/uv/) and a local OpenAI-compatible LLM
 server (e.g. [Ollama](https://ollama.com)) with a model.
 
-> Installation instructions coming soon
-
 ```bash
 git clone https://github.com/zummenix/khorek.git
 cd khorek
-uv sync
-uv run khorek explore-and-fix
+uv tool install .
 ```
 
-Or step by step:
+**Init**
 
 ```bash
-uv run khorek explore   # scout: record issues in the database
-uv run khorek fix       # fix open issues one at a time, verifying each
-```
-
-Review what was found with `khorek issues list`.
-
-### First setup
-
-`khorek init` interactively gathers the basic settings and dumps a canonical
-`khorek.toml` into the destination directory:
-
-```bash
-uv run khorek init                    # dump ./khorek.toml
-uv run khorek init -p .               # dump into another directory
-uv run khorek init --config-name khorek.local   # dump khorek.local.toml
+khorek init      # interactively setup the `khorek.toml`
 ```
 
 It asks for the LLM base URL (skippable, defaults to a local Ollama server), the
 model name (required), a verify command (required, e.g. `ruff format --check .`),
 and whether to add the `comments` aspect. Existing configs are never overwritten.
+
+**Explore**
+
+```bash
+khorek explore   # scout: record issues in the database
+```
+
+**View**
+
+```bash
+khorek issues    # view issues recorded after `khorek explore`
+```
+
+**Fix**
+
+```bash
+khorek fix       # fix open issues one at a time, verifying each
+```
+
+See `khorek --help` for more commands
 
 ## Configuration
 
@@ -74,7 +77,7 @@ Aspects, agents, limits and verifier commands. Take a look at
 `khorek` can record every model call and serve a local viewer:
 
 ```bash
-uv run khorek explore --trace
+khorek explore --trace
 ```
 
 See [docs/tracing.md](docs/tracing.md) for details.
