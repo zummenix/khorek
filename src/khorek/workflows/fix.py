@@ -41,7 +41,6 @@ from khorek.llm import AgentError
 from khorek.report import FixStats
 from khorek.snapshots import Snapshotter
 from khorek.verify import Failure, run_commands
-from khorek.workflows.explore import line_count
 
 MAX_LAST_ERROR_CHARS = 2000
 _SEVERITY_RANK = {"high": 0, "medium": 1, "low": 2}
@@ -104,7 +103,6 @@ class FixState:
     pre_fix_sha: str = ""
     content: str = ""
     new_sha: str = ""
-    lines_after: int = 1
     rounds: int = 0
     previous_failure: str | None = None
     previous_source: str | None = None
@@ -134,6 +132,10 @@ class _FixWorkflow:
         self.limit = limit
         self.queue = build_queue(app.database, exclude_ids=exclude_ids)
         self.attempted_ids = attempted_ids if attempted_ids is not None else set()
+        # Current sha256 per path, hashed at most once per run.  A fixed or
+        # restored file invalidates its entry so a later same-path issue sees
+        # the on-disk content.
+        self._sha_cache: dict[str, str] = {}
         self.max_attempts = app.config.agents.fixer.max_attempts
         self.max_handoffs = app.config.agents.reviewer.max_handoffs
         self.verifier = VerifierAgent(app.llm, config=app.config.agents.verifier)
@@ -154,6 +156,22 @@ class _FixWorkflow:
     def _under_limit(self, state: FixState) -> bool:
         return self.limit <= 0 or state.stats.attempted < self.limit
 
+    def _current_sha(self, path: str) -> str | None:
+        """Hash ``project_root / path`` once per run, caching by relative path.
+
+        Returns ``None`` when the file cannot be read (missing or unreadable).
+        Only successful hashes are cached so a later read retries a failed one.
+        """
+        cached = self._sha_cache.get(path)
+        if cached is not None:
+            return cached
+        try:
+            sha = sha256_file(self.app.project_root / path)
+        except OSError:
+            return None
+        self._sha_cache[path] = sha
+        return sha
+
     def _reset_issue_fields(self, **updates: Any) -> dict[str, Any]:
         reset: dict[str, Any] = {
             "current": None,
@@ -161,7 +179,6 @@ class _FixWorkflow:
             "pre_fix_sha": "",
             "content": "",
             "new_sha": "",
-            "lines_after": 1,
             "rounds": 0,
             "previous_failure": None,
             "previous_source": None,
@@ -201,18 +218,20 @@ class _FixWorkflow:
         if issue is None:
             return {"index": next_index}
 
-        absolute = self.app.project_root / issue.path
-        try:
-            current_sha = sha256_file(absolute)
-        except OSError:
-            current_sha = None
+        current_sha = self._current_sha(issue.path)
+        pair_state = self._database.get_state(issue.aspect_id, issue.path)
 
-        # Fix staleness: the file changed outside khorek; drop the issue.
-        if current_sha is None or issue.sha256 != current_sha:
-            self._database.delete_issue(issue.id)
+        # Fix staleness (§4.1): the pair's version token — its state row — no
+        # longer matches the file, or the file vanished.  An absent state row
+        # means the pair is fixable (e.g. an ``issues delete`` survivor).  A
+        # drifted pair drops every open issue on the path at once, counted as a
+        # single stale skip (amendment G7), so a drifted multi-issue pair can no
+        # longer exhaust the attempt budget.
+        if current_sha is None or (pair_state is not None and pair_state.sha256 != current_sha):
+            self._database.delete_issues_for(issue.aspect_id, issue.path)
             self.app.reporter.fix_skipped_stale(issue.id, issue.aspect_id, issue.path)
             return {
-                "index": state.index + 1,
+                "index": next_index,
                 "stats": replace(
                     state.stats,
                     attempted=state.stats.attempted + 1,
@@ -220,6 +239,7 @@ class _FixWorkflow:
                 ),
             }
 
+        absolute = self.app.project_root / issue.path
         snapshotter = Snapshotter(self.app.project_root)
         stats = replace(state.stats, attempted=state.stats.attempted + 1)
         try:
@@ -241,7 +261,7 @@ class _FixWorkflow:
             "stats": stats,
             "current": issue,
             "snapshotter": snapshotter,
-            "pre_fix_sha": issue.sha256,
+            "pre_fix_sha": current_sha,
             "content": content,
             "rounds": 0,
             "previous_failure": None,
@@ -313,7 +333,6 @@ class _FixWorkflow:
         if result.passed:
             absolute = self.app.project_root / issue.path
             try:
-                content = read_text_file(absolute)
                 new_sha = sha256_file(absolute)
             except OSError as exc:
                 return {
@@ -324,7 +343,6 @@ class _FixWorkflow:
             return {
                 "verified": True,
                 "new_sha": new_sha,
-                "lines_after": line_count(content),
                 "last_error": None,
             }
 
@@ -405,18 +423,19 @@ class _FixWorkflow:
         database = self._database
 
         self._database.delete_issue(issue.id)
-        count = max(1, state.lines_after)
-        for sibling in self._database.open_issues_for_path(issue.path):
-            if sibling.sha256 != state.pre_fix_sha:
+        # The pair's state row is the version token.  Advancing every aspect's
+        # row on this path to the post-fix hash re-keys all sibling issues at
+        # once — the per-issue sha rewrite is gone.  Only a row explored at the
+        # exact content the fix started from (``pre_fix_sha``) is advanced; a
+        # row at different content was never validated against this fix and
+        # stays stale (amendment G2, cross-aspect).
+        for aspect_id in {
+            sibling.aspect_id for sibling in database.open_issues_for_path(issue.path)
+        }:
+            row = database.get_state(aspect_id, issue.path)
+            if row is None or row.sha256 != state.pre_fix_sha:
                 continue
-            line_start = min(max(1, sibling.line_start), count)
-            line_end = min(max(sibling.line_end, line_start), count)
-            database.update_issue(
-                sibling.id,
-                sha256=state.new_sha,
-                line_start=line_start,
-                line_end=line_end,
-            )
+            database.upsert_state(aspect_id, issue.path, state.new_sha, row.outcome)
 
         if not database.open_issues_for(issue.aspect_id, issue.path):
             row = database.get_state(issue.aspect_id, issue.path)
@@ -426,6 +445,8 @@ class _FixWorkflow:
                 else:
                     database.upsert_state(issue.aspect_id, issue.path, state.new_sha, "clean")
 
+        # The file changed; a later same-path issue must re-hash it.
+        self._sha_cache.pop(issue.path, None)
         self.app.reporter.fix_finished(issue.id, issue.aspect_id, issue.path)
         self.app.reporter.fix_report(issue, state.fix_summary, review_summary=state.review_summary)
         return {
@@ -446,6 +467,9 @@ class _FixWorkflow:
                 )
                 error = trim_error(f"{error}\nrestore failed: {exc}")
 
+        # The file was restored (or a failed restore may have changed it); a
+        # later same-path issue must re-hash it.
+        self._sha_cache.pop(issue.path, None)
         self._database.update_issue(
             issue.id,
             retry_count=issue.retry_count + 1,

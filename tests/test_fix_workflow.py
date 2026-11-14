@@ -300,11 +300,14 @@ def test_exhausted_attempts_restore_file_and_keep_issue_open(tmp_path: Path, cap
     assert "still failing after attempt two" in output
 
 
-def test_stale_hash_issue_is_deleted_and_counted(tmp_path: Path, capsys) -> None:
+def test_file_drifted_since_explore_drops_pair_issues(tmp_path: Path, capsys) -> None:
     project = make_project(
         tmp_path / "project", files={"src/a.py": "value = 1\n"}, verify=TRUE_VERIFY
     )
-    seed_issue(project, sha256="stale-hash")
+    # The pair was explored at "old-sha"; the file has since drifted, so the
+    # state row (the version token) no longer matches the current file.
+    seed_state(project, sha256="old-sha", outcome="issues")
+    seed_issue(project)
     fake = FakeModel([])
 
     assert run_cli(fake, *fix_args(project)) == 0
@@ -322,7 +325,8 @@ def test_stale_skip_prints_no_report_block(tmp_path: Path, capsys) -> None:
         files={"src/a.py": "value = 1\n"},
         verify=TRUE_VERIFY,
     )
-    seed_issue(project, sha256="stale-hash")
+    seed_state(project, sha256="old-sha", outcome="issues")
+    seed_issue(project)
     fake = FakeModel([])
 
     assert run_cli(fake, *fix_args(project)) == 0
@@ -391,16 +395,13 @@ def test_hash_advance_lets_a_second_issue_in_the_same_file_be_fixed(tmp_path: Pa
     assert row.sha256 == sha256_file(project.root / "src/a.py")
 
 
-def test_fix_advances_sibling_hash_but_leaves_state_while_issues_remain(
-    tmp_path: Path, capsys
-) -> None:
+def test_fix_advances_pair_state_leaving_siblings_fixable(tmp_path: Path, capsys) -> None:
     project = make_project(
         tmp_path / "project",
         files={"src/a.py": "alpha = 1\nbeta = 1\n"},
         verify=TRUE_VERIFY,
     )
     seed_state(project, outcome="issues")
-    old_sha = sha256_file(project.root / "src/a.py")
     first = seed_issue(project, description="alpha is wrong", line_start=1, line_end=1)
     second = seed_issue(project, description="beta is wrong", line_start=2, line_end=2)
     fake = FakeModel(
@@ -409,19 +410,132 @@ def test_fix_advances_sibling_hash_but_leaves_state_while_issues_remain(
 
     assert run_cli(fake, *fix_args(project, "--limit", "1")) == 1
 
+    # The sibling issue survives; the pair's state row advanced to the post-fix
+    # hash so the sibling is no longer stale (the per-issue sha rewrite is gone).
     stored = issues(project)
     assert [entry.id for entry in stored] == [second]
-    new_sha = sha256_file(project.root / "src/a.py")
-    assert stored[0].sha256 == new_sha
-    assert stored[0].sha256 != old_sha
     row = state(project)
     assert row is not None
     assert row.outcome == "issues"
-    assert row.sha256 == old_sha
+    assert row.sha256 == sha256_file(project.root / "src/a.py")
     assert first != second
     output = capsys.readouterr().out
     assert "1 attempted, 1 fixed, 0 failed" in output
     assert "1 open issues" in output
+
+    # The sibling is fixable on the next run: the advanced state row matches.
+    fake2 = FakeModel(
+        [edit("beta = 1", "beta = 2"), fix_report("fixed beta"), review(True, "good")]
+    )
+    assert run_cli(fake2, *fix_args(project)) == 0
+    assert issues(project) == []
+    assert project.read("src/a.py") == "alpha = 2\nbeta = 2\n"
+
+
+def test_cross_aspect_fix_advances_other_aspect_state(tmp_path: Path) -> None:
+    project = make_project(
+        tmp_path / "project",
+        files={"src/a.py": "alpha = 1\n"},
+        aspects=[
+            {"id": "comments", "prompt": "Find bad comments.", "files": ["src/"]},
+            {"id": "naming", "prompt": "Find bad names.", "files": ["src/"]},
+        ],
+        verify=TRUE_VERIFY,
+    )
+    # Both aspects explored the file at the same content.
+    seed_state(project, aspect_id="comments", outcome="issues")
+    seed_state(project, aspect_id="naming", outcome="issues")
+    seed_issue(project, aspect_id="comments", description="bad comment")
+    seed_issue(project, aspect_id="naming", description="bad name")
+
+    # Fix only the comments issue (limit the run to one attempt).
+    fake = FakeModel(
+        [edit("alpha = 1", "alpha = 2"), fix_report("fixed comment"), review(True, "good")]
+    )
+    assert run_cli(fake, *fix_args(project, "--limit", "1")) == 1
+
+    # The naming aspect's state row advanced to the post-fix hash so its issue
+    # stays fixable; its outcome is preserved.  The comments pair drained clean.
+    naming_state = state(project, aspect="naming")
+    assert naming_state is not None
+    assert naming_state.outcome == "issues"
+    assert naming_state.sha256 == sha256_file(project.root / "src/a.py")
+    comments_state = state(project, aspect="comments")
+    assert comments_state is not None
+    assert comments_state.outcome == "clean"
+    remaining = issues(project)
+    assert [issue.aspect_id for issue in remaining] == ["naming"]
+
+
+def test_cross_aspect_state_not_advanced_for_drifted_sibling(tmp_path: Path) -> None:
+    project = make_project(
+        tmp_path / "project",
+        files={"src/a.py": "alpha = 1\n"},
+        aspects=[
+            {"id": "comments", "prompt": "Find bad comments.", "files": ["src/"]},
+            {"id": "naming", "prompt": "Find bad names.", "files": ["src/"]},
+        ],
+        verify=TRUE_VERIFY,
+    )
+    # comments was explored at the current content; naming was explored at an
+    # older content (its row is drifted and was never re-explored).
+    seed_state(project, aspect_id="comments", outcome="issues")
+    seed_state(project, aspect_id="naming", sha256="drifted-sha", outcome="issues")
+    seed_issue(project, aspect_id="comments", description="bad comment")
+    seed_issue(project, aspect_id="naming", description="bad name")
+
+    fake = FakeModel(
+        [edit("alpha = 1", "alpha = 2"), fix_report("fixed comment"), review(True, "good")]
+    )
+    assert run_cli(fake, *fix_args(project, "--limit", "1")) == 1
+
+    # The naming row was NOT advanced (its sha != pre_fix_sha): it stays
+    # drifted, so the naming issue drops as stale on the next run instead of
+    # being handed a post-fix line range it was never validated against.
+    naming_state = state(project, aspect="naming")
+    assert naming_state is not None
+    assert naming_state.sha256 == "drifted-sha"  # unchanged by the comments fix
+    remaining = issues(project)
+    assert [issue.aspect_id for issue in remaining] == ["naming"]
+
+    fake2 = FakeModel([])
+    assert run_cli(fake2, *fix_args(project)) == 0
+    assert fake2.chat_calls == 0
+    assert issues(project) == []
+
+
+def test_deleted_file_drops_pair_issues(tmp_path: Path, capsys) -> None:
+    project = make_project(
+        tmp_path / "project", files={"src/a.py": "value = 1\n"}, verify=TRUE_VERIFY
+    )
+    # The pair was explored; then the file is deleted out-of-band.
+    seed_state(project, outcome="issues")
+    seed_issue(project)
+    (project.root / "src" / "a.py").unlink()
+    fake = FakeModel([])
+
+    assert run_cli(fake, *fix_args(project)) == 0
+
+    assert fake.chat_calls == 0
+    assert issues(project) == []
+    output = capsys.readouterr().out
+    assert "skipped (stale hash)" in output
+    assert "1 attempted, 0 fixed, 0 failed, 0 rejected, 1 skipped-stale, 0 open issues" in output
+
+
+def test_state_none_with_open_issue_is_still_fixable(tmp_path: Path, capsys) -> None:
+    project = make_project(
+        tmp_path / "project", files={"src/a.py": "value = 1\n"}, verify=TRUE_VERIFY
+    )
+    # An open issue whose pair's state row was cleared (e.g. by `issues delete`
+    # on a sibling) is still fixable: an absent version token means "not yet
+    # validated", not "stale".
+    seed_issue(project)
+    fake = FakeModel([edit("value = 1", "value = 2"), fix_report("fixed"), review(True, "good")])
+
+    assert run_cli(fake, *fix_args(project)) == 0
+    assert issues(project) == []
+    assert project.read("src/a.py") == "value = 2\n"
 
 
 def test_truncated_state_row_is_deleted_after_successful_fix(tmp_path: Path) -> None:
@@ -463,23 +577,32 @@ def test_fixed_true_without_a_file_change_fails_the_issue(tmp_path: Path, capsys
     assert "1 attempted, 0 fixed, 1 failed" in output
 
 
-def test_limit_counts_stale_skips(tmp_path: Path, capsys) -> None:
+def test_limit_counts_stale_pair_once_leaves_budget(tmp_path: Path, capsys) -> None:
     project = make_project(
         tmp_path / "project",
-        files={"src/a.py": "a = 1\n", "src/b.py": "b = 1\n"},
+        files={"src/a.py": "a1 = 1\na2 = 1\na3 = 1\n", "src/b.py": "b = 1\n"},
         verify=TRUE_VERIFY,
     )
-    seed_issue(project, path="src/a.py", sha256="stale-hash")
+    # A drifted 3-issue pair (a.py): its state row is at an old sha, so all
+    # three issues are stale at once.  A live issue (b.py) sits elsewhere.
+    seed_state(project, path="src/a.py", sha256="old-sha", outcome="issues")
+    seed_issue(project, path="src/a.py", description="a1", line_start=1, line_end=1)
+    seed_issue(project, path="src/a.py", description="a2", line_start=2, line_end=2)
+    seed_issue(project, path="src/a.py", description="a3", line_start=3, line_end=3)
     seed_issue(project, path="src/b.py", description="b is wrong")
-    fake = FakeModel([])
+    fake = FakeModel(
+        [edit("b = 1", "b = 2", path="src/b.py"), fix_report("fixed b"), review(True, "good")]
+    )
 
-    assert run_cli(fake, *fix_args(project, "--limit", "1")) == 1
+    # Under the old per-issue rule the 3-issue pair would each consume an
+    # attempt; now the drifted pair counts once, so b.py gets its attempt
+    # within the budget of two.
+    assert run_cli(fake, *fix_args(project, "--limit", "2")) == 0
 
-    assert fake.chat_calls == 0
-    stored = issues(project)
-    assert [entry.path for entry in stored] == ["src/b.py"]
+    # The drifted pair dropped in a single skip; the live issue was fixed.
+    assert issues(project) == []
     output = capsys.readouterr().out
-    assert "1 attempted, 0 fixed, 0 failed, 0 rejected, 1 skipped-stale, 1 open issues" in output
+    assert "2 attempted, 1 fixed, 0 failed, 0 rejected, 1 skipped-stale, 0 open issues" in output
 
 
 def test_fixed_false_ends_attempts_without_verification(tmp_path: Path, capsys) -> None:

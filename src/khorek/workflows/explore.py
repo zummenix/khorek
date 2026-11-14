@@ -135,17 +135,17 @@ class _Explorer:
             app.reporter.pair_errored(aspect.id, relative, "read", str(exc))
             return replace(stats, errored=1)
 
-        open_issues = app.database.open_issues_for(aspect.id, relative)
-        if any(issue.sha256 == current_sha for issue in open_issues):
-            app.reporter.pair_skipped(aspect.id, relative, "open issues")
-            return replace(stats, skipped=1)
-
+        # The state row is the pair's version token.  A matching row means the
+        # pair was explored at exactly the current content, so its open issues
+        # (if any) are still valid and the pair is skipped.  An absent or
+        # drifted row means the pair is re-explored and its old issues replaced.
         state = app.database.get_state(aspect.id, relative)
         if state is not None and state.sha256 == current_sha:
             app.reporter.pair_skipped(aspect.id, relative, state.outcome)
             return replace(stats, skipped=1)
 
-        # Rule 3: stale state/issues are replaced by a fresh exploration.
+        # Stale or never-explored pair: replace the state and any open issues
+        # with a fresh exploration.
         app.database.delete_state(aspect.id, relative)
         app.database.delete_issues_for(aspect.id, relative)
 
@@ -173,7 +173,6 @@ class _Explorer:
             app.database.insert_issue(
                 aspect_id=aspect.id,
                 path=relative,
-                sha256=current_sha,
                 description=issue.description,
                 line_start=issue.line_start,
                 line_end=issue.line_end,

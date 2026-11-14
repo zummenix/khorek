@@ -137,7 +137,6 @@ def _issue(line_start: int = 2, line_end: int = 2) -> Issue:
         id=7,
         aspect_id="comments",
         path="src/a.py",
-        sha256="stored-sha",
         description="the comment is inconsistent",
         line_start=line_start,
         line_end=line_end,

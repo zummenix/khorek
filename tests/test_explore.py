@@ -73,24 +73,26 @@ def test_skip_on_open_issues_does_not_duplicate(project) -> None:
     assert len(issues(project)) == 1
 
 
-def test_open_issue_skip_precedes_state_skip(project) -> None:
+def test_re_explores_when_state_row_is_absent(project) -> None:
     fake = FakeModel([report(issue("bad comment", 2, 2, "high"))])
     assert run_cli(fake, *explore_args(project)) == 0
+    assert len(issues(project)) == 1
 
-    # A state row with a different hash would normally trigger a re-explore,
-    # but rule 1 (matching open-issue hash) must win.
+    # Deleting the state row (the pair's version token) makes the pair re-explore
+    # even though an open issue exists: an absent token means "not yet validated".
     with Database(project.db_path, project.root) as db:
-        db.upsert_state("comments", "src/a.py", "not-the-current-hash", "issues")
+        db.delete_state("comments", "src/a.py")
 
+    fake.add(report(issue("bad comment", 2, 2, "high")))
     assert run_cli(fake, *explore_args(project)) == 0
-    assert fake.chat_calls == 1
+    assert fake.chat_calls == 2
     assert len(issues(project)) == 1
 
 
 def test_hash_change_re_explores_and_replaces_old_issue(project) -> None:
     fake = FakeModel([report(issue("bad comment", 2, 2, "high"))])
     assert run_cli(fake, *explore_args(project)) == 0
-    old_issue = issues(project)[0]
+    assert len(issues(project)) == 1
 
     project.write("src/a.py", "# changed\nvalue = 2\n")
     fake.add(report())
@@ -103,7 +105,6 @@ def test_hash_change_re_explores_and_replaces_old_issue(project) -> None:
     assert row is not None
     assert row.outcome == "clean"
     assert row.sha256 == sha256_file(project.root / "src/a.py")
-    assert old_issue.sha256 != row.sha256
 
 
 def test_stale_state_and_issues_are_deleted_before_exploring(tmp_path: Path) -> None:
@@ -113,7 +114,6 @@ def test_stale_state_and_issues_are_deleted_before_exploring(tmp_path: Path) -> 
         db.insert_issue(
             aspect_id="comments",
             path="src/a.py",
-            sha256="stale-hash",
             description="stale issue",
             line_start=1,
             line_end=1,
@@ -273,7 +273,6 @@ def test_prune_drift_reports_and_removes_old_aspect(project, capsys) -> None:
         db.insert_issue(
             aspect_id="retired",
             path="src/a.py",
-            sha256="sha",
             description="old",
             line_start=1,
             line_end=1,

@@ -51,7 +51,6 @@ def _seed(
     root: Path,
     db: Database,
     path: str,
-    sha: str,
     *,
     aspect_id: str = "comments",
     description: str = "an issue",
@@ -62,7 +61,6 @@ def _seed(
     return db.insert_issue(
         aspect_id=aspect_id,
         path=path,
-        sha256=sha,
         description=description,
         line_start=line_start,
         line_end=line_end,
@@ -76,10 +74,12 @@ def _seed(
 def test_staleness_fresh_changed_missing(project, db_path) -> None:
     root, a, b = project
     with Database(db_path, root) as db:
-        fresh = _seed(root, db, "src/a.py", sha256_file(a))
-        sibling = _seed(root, db, "src/a.py", sha256_file(a))  # sibling on same path
-        changed = _seed(root, db, "src/b.py", sha256_file(b))
-        missing = _seed(root, db, "src/gone.py", "deadbeef")
+        fresh = _seed(root, db, "src/a.py")
+        sibling = _seed(root, db, "src/a.py")  # sibling on same path
+        changed = _seed(root, db, "src/b.py")
+        missing = _seed(root, db, "src/gone.py")
+        db.upsert_state("comments", "src/a.py", sha256_file(a), "issues")
+        db.upsert_state("comments", "src/b.py", sha256_file(b), "issues")
 
     # Make b.py changed and delete gone.py.
     b.write_text("x = 2\n")
@@ -95,11 +95,11 @@ def test_staleness_fresh_changed_missing(project, db_path) -> None:
 def test_staleness_hashes_each_distinct_path_once(project, db_path, monkeypatch) -> None:
     root, a, b = project
     with Database(db_path, root) as db:
-        _seed(root, db, "src/a.py", sha256_file(a))
-        _seed(root, db, "src/a.py", sha256_file(a))
-        _seed(root, db, "src/b.py", sha256_file(b))
-        _seed(root, db, "src/b.py", sha256_file(b))
-        _seed(root, db, "src/gone.py", "x")
+        _seed(root, db, "src/a.py")
+        _seed(root, db, "src/a.py")
+        _seed(root, db, "src/b.py")
+        _seed(root, db, "src/b.py")
+        _seed(root, db, "src/gone.py")
 
     calls: list[str] = []
     real = sha256_file
@@ -111,16 +111,20 @@ def test_staleness_hashes_each_distinct_path_once(project, db_path, monkeypatch)
     monkeypatch.setattr(issues_mod, "sha256_file", counting)
     with Database(db_path, root, readonly=True) as db:
         staleness(db, root)
-    # Three distinct paths (a.py, b.py, gone.py) -> three hash calls.
-    assert len(calls) == 3
+    # The two existing distinct paths are each hashed once; the missing file is
+    # detected via is_file() and never hashed.
+    assert len(calls) == 2
+    assert {Path(call).name for call in calls} == {"a.py", "b.py"}
 
 
 def test_issue_status_labels(project, db_path) -> None:
     root, a, b = project
     with Database(db_path, root) as db:
-        fresh = _seed(root, db, "src/a.py", sha256_file(a))
-        changed = _seed(root, db, "src/b.py", sha256_file(b))
-        missing = _seed(root, db, "src/gone.py", "x")
+        fresh = _seed(root, db, "src/a.py")
+        changed = _seed(root, db, "src/b.py")
+        missing = _seed(root, db, "src/gone.py")
+        db.upsert_state("comments", "src/a.py", sha256_file(a), "issues")
+        db.upsert_state("comments", "src/b.py", sha256_file(b), "issues")
     b.write_text("changed\n")
     with Database(db_path, root, readonly=True) as db:
         for issue_id, expected in (
@@ -130,7 +134,7 @@ def test_issue_status_labels(project, db_path) -> None:
         ):
             issue = db.get_issue(issue_id)
             assert issue is not None
-            assert issue_status(root, issue) == expected
+            assert issue_status(db, root, issue) == expected
 
 
 # -- prune -----------------------------------------------------------------
@@ -139,9 +143,11 @@ def test_issue_status_labels(project, db_path) -> None:
 def test_prune_stale_deletes_only_stale(project, db_path) -> None:
     root, a, b = project
     with Database(db_path, root) as db:
-        fresh = _seed(root, db, "src/a.py", sha256_file(a))
-        changed = _seed(root, db, "src/b.py", sha256_file(b))
-        missing = _seed(root, db, "src/gone.py", "x")
+        fresh = _seed(root, db, "src/a.py")
+        changed = _seed(root, db, "src/b.py")
+        missing = _seed(root, db, "src/gone.py")
+        db.upsert_state("comments", "src/a.py", sha256_file(a), "issues")
+        db.upsert_state("comments", "src/b.py", sha256_file(b), "issues")
     b.write_text("x = 2\n")
 
     with Database(db_path, root) as db:
@@ -156,8 +162,10 @@ def test_prune_stale_deletes_only_stale(project, db_path) -> None:
 def test_prune_stale_none(project, db_path) -> None:
     root, a, b = project
     with Database(db_path, root) as db:
-        _seed(root, db, "src/a.py", sha256_file(a))
-        _seed(root, db, "src/b.py", sha256_file(b))
+        _seed(root, db, "src/a.py")
+        _seed(root, db, "src/b.py")
+        db.upsert_state("comments", "src/a.py", sha256_file(a), "issues")
+        db.upsert_state("comments", "src/b.py", sha256_file(b), "issues")
     with Database(db_path, root) as db:
         assert prune_stale(db, root) == 0
 
@@ -168,7 +176,7 @@ def test_prune_stale_none(project, db_path) -> None:
 def test_dismiss_drained_pair_marked_clean(project, db_path) -> None:
     root, a, b = project
     with Database(db_path, root) as db:
-        issue = _seed(root, db, "src/a.py", sha256_file(a))
+        issue = _seed(root, db, "src/a.py")
         db.upsert_state("comments", "src/a.py", sha256_file(a), "issues")
 
     with Database(db_path, root) as db:
@@ -190,7 +198,7 @@ def test_dismiss_drained_pair_marked_clean(project, db_path) -> None:
 def test_dismiss_stale_pair_uses_current_sha(project, db_path) -> None:
     root, a, b = project
     with Database(db_path, root) as db:
-        issue = _seed(root, db, "src/a.py", sha256_file(a))
+        issue = _seed(root, db, "src/a.py")
         db.upsert_state("comments", "src/a.py", sha256_file(a), "issues")
     # File changed after the issue was recorded.
     a.write_text("# now different\n")
@@ -209,8 +217,8 @@ def test_dismiss_stale_pair_uses_current_sha(project, db_path) -> None:
 def test_dismiss_siblings_leaves_state(project, db_path) -> None:
     root, a, b = project
     with Database(db_path, root) as db:
-        first = _seed(root, db, "src/a.py", sha256_file(a), line_start=1, line_end=1)
-        _seed(root, db, "src/a.py", sha256_file(a), line_start=2, line_end=3)
+        first = _seed(root, db, "src/a.py", line_start=1, line_end=1)
+        _seed(root, db, "src/a.py", line_start=2, line_end=3)
         db.upsert_state("comments", "src/a.py", sha256_file(a), "issues")
 
     with Database(db_path, root) as db:
@@ -226,8 +234,8 @@ def test_dismiss_siblings_leaves_state(project, db_path) -> None:
 def test_dismiss_multiple_ids_same_pair(project, db_path) -> None:
     root, a, b = project
     with Database(db_path, root) as db:
-        first = _seed(root, db, "src/a.py", sha256_file(a), line_start=1, line_end=1)
-        second = _seed(root, db, "src/a.py", sha256_file(a), line_start=2, line_end=2)
+        first = _seed(root, db, "src/a.py", line_start=1, line_end=1)
+        second = _seed(root, db, "src/a.py", line_start=2, line_end=2)
         db.upsert_state("comments", "src/a.py", sha256_file(a), "issues")
 
     with Database(db_path, root) as db:
@@ -241,7 +249,7 @@ def test_dismiss_multiple_ids_same_pair(project, db_path) -> None:
 def test_dismiss_missing_file_removes_state(project, db_path) -> None:
     root, a, b = project
     with Database(db_path, root) as db:
-        issue = _seed(root, db, "src/gone.py", "deadbeef")
+        issue = _seed(root, db, "src/gone.py")
         db.upsert_state("comments", "src/gone.py", "deadbeef", "issues")
 
     with Database(db_path, root) as db:
@@ -265,8 +273,8 @@ def test_dismiss_unknown_id(project, db_path) -> None:
 def test_delete_removes_state_even_with_siblings(project, db_path) -> None:
     root, a, b = project
     with Database(db_path, root) as db:
-        first = _seed(root, db, "src/a.py", sha256_file(a), line_start=1, line_end=1)
-        _seed(root, db, "src/a.py", sha256_file(a), line_start=2, line_end=2)
+        first = _seed(root, db, "src/a.py", line_start=1, line_end=1)
+        _seed(root, db, "src/a.py", line_start=2, line_end=2)
         db.upsert_state("comments", "src/a.py", sha256_file(a), "issues")
 
     with Database(db_path, root) as db:
@@ -282,7 +290,7 @@ def test_delete_removes_state_even_with_siblings(project, db_path) -> None:
 def test_delete_missing_file(project, db_path) -> None:
     root, a, b = project
     with Database(db_path, root) as db:
-        issue = _seed(root, db, "src/gone.py", "x")
+        issue = _seed(root, db, "src/gone.py")
         db.upsert_state("comments", "src/gone.py", "x", "issues")
     with Database(db_path, root) as db:
         outcomes = delete(db, root, [issue])
@@ -314,13 +322,11 @@ def _issue(
     created_at: str = "2026-11-12T10:15:30+00:00",
     updated_at: str = "2026-11-12T10:15:30+00:00",
     last_error: str | None = None,
-    sha256: str = "sha",
 ):
     return Issue(
         id=id,
         aspect_id=aspect,
         path=path,
-        sha256=sha256,
         description=description,
         line_start=line_start,
         line_end=line_end,

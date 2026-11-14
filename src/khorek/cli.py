@@ -634,7 +634,8 @@ def _run_init(args: argparse.Namespace, answers: Answers | None = None) -> int:
     try:
         if target.exists():
             return _fail(
-                f"refusing to overwrite existing config: {target} (use --config-name for a fresh file)"
+                f"refusing to overwrite existing config: {target}"
+                "(use --config-name for a fresh file)"
             )
     except OSError as exc:
         return _fail(f"cannot check existing config: {target}: {exc}")
@@ -743,12 +744,13 @@ def _run_issues_show(args: argparse.Namespace, project_root: Path, db_path: Path
     try:
         with Database(db_path, project_root, readonly=True) as database:
             issue = database.get_issue(args.id)
+            if issue is None:
+                print(f"khorek: unknown issue id: {args.id}", file=sys.stderr)
+                return EXIT_ERROR
+            status = issue_status(database, project_root, issue)
     except DatabaseError as exc:
         return _fail(str(exc))
-    if issue is None:
-        print(f"khorek: unknown issue id: {args.id}", file=sys.stderr)
-        return EXIT_ERROR
-    print(render_show(issue, status=issue_status(project_root, issue)))
+    print(render_show(issue, status=status))
     return EXIT_OK
 
 

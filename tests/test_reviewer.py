@@ -40,7 +40,6 @@ def _issue() -> Issue:
         id=7,
         aspect_id="comments",
         path="src/a.py",
-        sha256="sha",
         description="the comment is inconsistent with the code",
         line_start=1,
         line_end=1,

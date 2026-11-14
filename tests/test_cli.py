@@ -9,7 +9,6 @@ import pytest
 
 from khorek.cli import main
 from khorek.db import Database, default_db_path
-from khorek.files import sha256_file
 from khorek.lock import lock_path_for
 from tests.conftest import (
     FakeModel,
@@ -404,6 +403,8 @@ def test_issues_list_prunes_stale(project, capsys) -> None:
     project.write("src/b.py", "b = 1\n")
     fresh = seed_issue(project, path="src/a.py", description="fresh one")
     stale = seed_issue(project, path="src/b.py", description="stale one")
+    seed_state(project, path="src/a.py", outcome="issues")
+    seed_state(project, path="src/b.py", outcome="issues")
     project.write("src/b.py", "b = 2\n")  # change after recording -> stale
 
     fake = FakeModel([])
@@ -421,6 +422,8 @@ def test_issues_list_stale_flag_no_prune(project, capsys) -> None:
     project.write("src/b.py", "b = 1\n")
     fresh = seed_issue(project, path="src/a.py", description="fresh one")
     stale = seed_issue(project, path="src/b.py", description="stale one")
+    seed_state(project, path="src/a.py", outcome="issues")
+    seed_state(project, path="src/b.py", outcome="issues")
     project.write("src/b.py", "b = 2\n")
     before = project.db_path.read_bytes()
 
@@ -440,6 +443,8 @@ def test_issues_list_held_lock_labels_stale(project, capsys) -> None:
     project.write("src/b.py", "b = 1\n")
     seed_issue(project, path="src/a.py", description="fresh one")
     seed_issue(project, path="src/b.py", description="stale one")
+    seed_state(project, path="src/a.py", outcome="issues")
+    seed_state(project, path="src/b.py", outcome="issues")
     project.write("src/b.py", "b = 2\n")
     before = project.db_path.read_bytes()
 
@@ -484,6 +489,7 @@ def test_issues_show_stale_and_single_line(project, capsys) -> None:
     issue_id = seed_issue(
         project, path="src/b.py", line_start=4, line_end=4, severity="low", description="stale desc"
     )
+    seed_state(project, path="src/b.py", outcome="issues")
     project.write("src/b.py", "b = 2\n")  # now stale
 
     fake = FakeModel([])
@@ -570,7 +576,6 @@ def test_issues_commands_without_config(tmp_path: Path, capsys) -> None:
         issue_id = database.insert_issue(
             aspect_id="comments",
             path="src/a.py",
-            sha256=sha256_file(root / "src" / "a.py"),
             description="no config here",
             line_start=1,
             line_end=1,

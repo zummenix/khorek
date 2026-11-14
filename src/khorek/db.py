@@ -19,7 +19,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "2"
+
+# Schema versions below ``SCHEMA_VERSION`` that we know how to migrate from.
+# Every version in this tuple is reachable from ``SCHEMA_VERSION`` by applying
+# the migrations in :meth:`Database._migrate` in order.
+_KNOWN_OLDER_VERSIONS = (1,)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -28,6 +33,9 @@ CREATE TABLE IF NOT EXISTS meta (
 );
 
 -- One row per explored (aspect, file) pair. Written after every explore.
+-- The pair's ``sha256`` is the single version token for its open issues: an
+-- issue is stale iff the file no longer matches this row's sha (or the row is
+-- missing).  See the fix workflow for the full rule.
 CREATE TABLE IF NOT EXISTS file_aspect_state (
   aspect_id TEXT NOT NULL,
   path      TEXT NOT NULL,
@@ -37,12 +45,12 @@ CREATE TABLE IF NOT EXISTS file_aspect_state (
   PRIMARY KEY (aspect_id, path)
 );
 
--- A row exists iff the issue is open.
+-- A row exists iff the issue is open.  There is no per-issue hash: the owning
+-- (aspect, path) state row's sha256 is the version token.
 CREATE TABLE IF NOT EXISTS issues (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   aspect_id   TEXT NOT NULL,
   path        TEXT NOT NULL,
-  sha256      TEXT NOT NULL,          -- hash of the file when the issue was found
   description TEXT NOT NULL,          -- free form, what is wrong
   line_start  INTEGER NOT NULL,       -- 1-based line number (clamped upstream)
   line_end    INTEGER NOT NULL,
@@ -86,7 +94,6 @@ class Issue:
     id: int
     aspect_id: str
     path: str
-    sha256: str
     description: str
     line_start: int
     line_end: int
@@ -155,11 +162,14 @@ class Database:
             # before changing the journal mode or creating any khorek table:
             # a root/schema mismatch must leave the file byte-identical.
             existing_meta = self._meta_table_exists(connection)
-            if existing_meta:
-                self._validate_meta(connection)
+            stored_version = self._validate_meta(connection) if existing_meta else None
             if not readonly:
                 connection.execute("PRAGMA journal_mode=WAL")
                 connection.execute("PRAGMA synchronous=NORMAL")
+                if stored_version is not None:
+                    current = self._version_number(SCHEMA_VERSION)
+                    if current is not None and stored_version < current:
+                        self._migrate(connection, stored_version)
                 connection.executescript(_SCHEMA)
                 if not existing_meta:
                     self._stamp_meta(connection)
@@ -196,7 +206,21 @@ class Database:
             ],
         )
 
-    def _validate_meta(self, connection: sqlite3.Connection) -> None:
+    @staticmethod
+    def _version_number(value: str) -> int | None:
+        """Parse a schema-version value; ``None`` when it is not an integer."""
+        try:
+            return int(value)
+        except ValueError:
+            return None
+
+    def _validate_meta(self, connection: sqlite3.Connection) -> int:
+        """Validate the meta table and return the stored schema-version number.
+
+        A root mismatch, a non-integer version, a *newer* version, or an
+        *unknown* older version all raise.  A known older version is returned
+        so the write-mode caller can migrate it; readonly callers never do.
+        """
         existing = self._read_meta(connection)
         missing = {"project_root", "schema_version"} - existing.keys()
         if missing:
@@ -210,12 +234,93 @@ class Database:
             raise DatabaseError(
                 f"database {self.path} belongs to project {stored_root}, not {self.project_root}"
             )
-        stored_version = existing["schema_version"]
-        if stored_version != SCHEMA_VERSION:
+
+        stored_version = self._version_number(existing["schema_version"])
+        if stored_version is None:
+            raise DatabaseError(
+                f"database {self.path} has an unrecognised schema version: "
+                f"{existing['schema_version']!r}"
+            )
+        current = self._version_number(SCHEMA_VERSION)
+        if current is None:  # pragma: no cover - SCHEMA_VERSION is a literal
+            raise DatabaseError("internal error: SCHEMA_VERSION is not an integer")
+        if stored_version > current:
+            raise DatabaseError(
+                f"database {self.path} uses schema version {stored_version}, "
+                f"expected {SCHEMA_VERSION} (newer)"
+            )
+        if stored_version < current and stored_version not in _KNOWN_OLDER_VERSIONS:
             raise DatabaseError(
                 f"database {self.path} uses schema version {stored_version}, "
                 f"expected {SCHEMA_VERSION}"
             )
+        return stored_version
+
+    def _migrate(self, connection: sqlite3.Connection, stored_version: int) -> None:
+        """Apply forward migrations from *stored_version* to ``SCHEMA_VERSION``.
+
+        Runs in a single transaction so a failure leaves the database in its
+        previous schema and version stamp.  Only the write-mode caller reaches
+        this; readonly connections never migrate (they may still read a known
+        older schema).
+        """
+        with connection:
+            if stored_version < 2:
+                self._migrate_v1_to_v2(connection)
+            connection.execute(
+                "UPDATE meta SET value = ? WHERE key = 'schema_version'",
+                (SCHEMA_VERSION,),
+            )
+
+    def _migrate_v1_to_v2(self, connection: sqlite3.Connection) -> None:
+        """Drop ``issues.sha256`` (the per-issue hash) added in schema v1.
+
+        ``DROP COLUMN`` needs SQLite >= 3.35; on older runtimes fall back to a
+        table recreation that preserves the AUTOINCREMENT sequence.
+        """
+        if sqlite3.sqlite_version_info >= (3, 35, 0):
+            connection.execute("ALTER TABLE issues DROP COLUMN sha256")
+            return
+        connection.execute("ALTER TABLE issues RENAME TO _issues_v1")
+        connection.execute(
+            """
+            CREATE TABLE issues (
+              id          INTEGER PRIMARY KEY AUTOINCREMENT,
+              aspect_id   TEXT NOT NULL,
+              path        TEXT NOT NULL,
+              description TEXT NOT NULL,
+              line_start  INTEGER NOT NULL,
+              line_end    INTEGER NOT NULL,
+              severity    TEXT NOT NULL CHECK (severity IN ('low', 'medium', 'high')),
+              retry_count INTEGER NOT NULL DEFAULT 0,
+              last_error  TEXT,
+              created_at  TEXT NOT NULL,
+              updated_at  TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO issues (
+              id, aspect_id, path, description, line_start, line_end, severity,
+              retry_count, last_error, created_at, updated_at
+            )
+            SELECT
+              id, aspect_id, path, description, line_start, line_end, severity,
+              retry_count, last_error, created_at, updated_at
+            FROM _issues_v1
+            """
+        )
+        connection.execute("DROP TABLE _issues_v1")
+        # Continue the AUTOINCREMENT sequence after the surviving rows so new
+        # issues never reuse an id.
+        connection.execute(
+            """
+            UPDATE sqlite_sequence
+            SET seq = (SELECT COALESCE(MAX(id), 0) FROM issues)
+            WHERE name = 'issues'
+            """
+        )
 
     # -- lifecycle -----------------------------------------------------
 
@@ -297,7 +402,6 @@ class Database:
         *,
         aspect_id: str,
         path: str,
-        sha256: str,
         description: str,
         line_start: int,
         line_end: int,
@@ -309,13 +413,12 @@ class Database:
         with self.connection:
             cursor = self.connection.execute(
                 "INSERT INTO issues "
-                "(aspect_id, path, sha256, description, line_start, line_end, severity, "
+                "(aspect_id, path, description, line_start, line_end, severity, "
                 "retry_count, last_error, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, 0, NULL, ?, ?)",
                 (
                     aspect_id,
                     path,
-                    sha256,
                     description,
                     line_start,
                     line_end,
@@ -426,7 +529,6 @@ class Database:
         allowed = {
             "aspect_id",
             "path",
-            "sha256",
             "description",
             "line_start",
             "line_end",
@@ -525,7 +627,6 @@ def _issue_from_row(row: sqlite3.Row) -> Issue:
         id=int(row["id"]),
         aspect_id=str(row["aspect_id"]),
         path=str(row["path"]),
-        sha256=str(row["sha256"]),
         description=str(row["description"]),
         line_start=int(row["line_start"]),
         line_end=int(row["line_end"]),

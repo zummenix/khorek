@@ -5,9 +5,12 @@ CLI layer owns locking, argument parsing, and output; the functions here take
 an open :class:`~khorek.db.Database` and project root.
 
 Staleness: an issue is *stale* when the file it was recorded on no longer
-matches its recorded sha256 (the file is missing, or its content changed
-out-of-band).  Dismissing a stale issue is meaningful: stamping the pair
-clean with the *current* sha says "I reviewed this file as it is now".
+matches its pair's (aspect, path) state row — the single version token the
+explore wrote (the file is missing, or its content changed out-of-band).
+A missing state row counts as fresh: an ``issues delete`` survivor is a
+re-explore, not a prune.  Dismissing a stale issue is meaningful: stamping
+the pair clean with the *current* sha says "I reviewed this file as it is
+now".
 """
 
 from __future__ import annotations
@@ -55,20 +58,31 @@ def _lines(issue: Issue) -> str:
     return f"{issue.line_start}-{issue.line_end}"
 
 
-def _classify(project_root: Path, issue: Issue) -> str:
-    """Classify one issue as FRESH / CHANGED / MISSING."""
-    try:
-        current = sha256_file(project_root / issue.path)
-    except OSError:
+def _pair_state_sha(database: Database, issue: Issue) -> str | None:
+    """The pair's state-row sha256, or None when the row is absent."""
+    row = database.get_state(issue.aspect_id, issue.path)
+    return row.sha256 if row is not None else None
+
+
+def _classify(database: Database, project_root: Path, issue: Issue) -> str:
+    """Classify one issue as FRESH / CHANGED / MISSING.
+
+    Staleness is a property of the (aspect, path) pair: MISSING when the file
+    is gone, FRESH when its current sha matches the pair's state row (or the
+    row is absent — a re-explore, not a prune), else CHANGED.
+    """
+    current = _current_sha(project_root, issue)
+    if current is None:
         return MISSING
-    if current == issue.sha256:
+    recorded = _pair_state_sha(database, issue)
+    if recorded is None or recorded == current:
         return FRESH
     return CHANGED
 
 
-def issue_status(project_root: Path, issue: Issue) -> str:
+def issue_status(database: Database, project_root: Path, issue: Issue) -> str:
     """Human status label for one issue (the ``status:`` field of show)."""
-    status = _classify(project_root, issue)
+    status = _classify(database, project_root, issue)
     if status == FRESH:
         return STATUS_FRESH
     if status == CHANGED:
@@ -79,23 +93,25 @@ def issue_status(project_root: Path, issue: Issue) -> str:
 def staleness(database: Database, project_root: Path) -> dict[int, str]:
     """Map every open issue id to FRESH / CHANGED / MISSING.
 
-    Each distinct path is hashed at most once.
+    Staleness is a property of the (aspect, path) pair: each distinct path is
+    hashed at most once and each distinct pair's state row is read at most
+    once.  A missing state row counts as FRESH (a re-explore, not a prune).
     """
     hashes: dict[str, str | None] = {}
+    state_shas: dict[tuple[str, str], str | None] = {}
     result: dict[int, str] = {}
     for issue in database.list_issues():
         if issue.path not in hashes:
-            try:
-                hashes[issue.path] = sha256_file(project_root / issue.path)
-            except OSError:
-                hashes[issue.path] = None
+            hashes[issue.path] = _current_sha(project_root, issue)
         current = hashes[issue.path]
         if current is None:
             result[issue.id] = MISSING
-        elif current == issue.sha256:
-            result[issue.id] = FRESH
-        else:
-            result[issue.id] = CHANGED
+            continue
+        key = (issue.aspect_id, issue.path)
+        if key not in state_shas:
+            state_shas[key] = _pair_state_sha(database, issue)
+        recorded = state_shas[key]
+        result[issue.id] = FRESH if recorded is None or recorded == current else CHANGED
     return result
 
 

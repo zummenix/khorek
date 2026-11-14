@@ -97,6 +97,111 @@ def test_schema_version_mismatch_is_fatal(tmp_path: Path) -> None:
         Database(path, project)
 
 
+def _create_v1_db(path: Path, project: Path) -> int:
+    """Create a schema-v1 database (issues.sha256 present) with one issue.
+
+    Returns the seeded issue id so a later migration can prove the
+    AUTOINCREMENT sequence is preserved.
+    """
+    now = "2024-01-01T00:00:00+00:00"
+    with sqlite3.connect(path) as raw:
+        raw.executescript(
+            """
+            CREATE TABLE meta (
+              key TEXT PRIMARY KEY,
+              value TEXT NOT NULL
+            );
+            CREATE TABLE file_aspect_state (
+              aspect_id TEXT NOT NULL,
+              path      TEXT NOT NULL,
+              sha256    TEXT NOT NULL,
+              outcome   TEXT NOT NULL CHECK (outcome IN ('clean', 'issues', 'truncated')),
+              updated_at TEXT NOT NULL,
+              PRIMARY KEY (aspect_id, path)
+            );
+            CREATE TABLE issues (
+              id          INTEGER PRIMARY KEY AUTOINCREMENT,
+              aspect_id   TEXT NOT NULL,
+              path        TEXT NOT NULL,
+              sha256      TEXT NOT NULL,
+              description TEXT NOT NULL,
+              line_start  INTEGER NOT NULL,
+              line_end    INTEGER NOT NULL,
+              severity    TEXT NOT NULL CHECK (severity IN ('low', 'medium', 'high')),
+              retry_count INTEGER NOT NULL DEFAULT 0,
+              last_error  TEXT,
+              created_at  TEXT NOT NULL,
+              updated_at  TEXT NOT NULL
+            );
+            CREATE INDEX idx_issues_aspect_path ON issues (aspect_id, path);
+            CREATE INDEX idx_issues_path ON issues (path);
+            CREATE INDEX idx_state_path ON file_aspect_state (path);
+            """
+        )
+        raw.executemany(
+            "INSERT INTO meta (key, value) VALUES (?, ?)",
+            [("project_root", str(project.resolve())), ("schema_version", "1")],
+        )
+        cursor = raw.execute(
+            "INSERT INTO issues "
+            "(aspect_id, path, sha256, description, line_start, line_end, severity, "
+            "retry_count, last_error, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?)",
+            ("comments", "src/a.py", "old-sha", "stale v1 issue", 1, 1, "high", now, now),
+        )
+        raw.commit()
+        rowid = cursor.lastrowid
+        assert rowid is not None
+        return rowid
+
+
+def test_v1_database_migrates_on_write_open(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    path = tmp_path / "khorek.db"
+    seeded = _create_v1_db(path, project)
+    assert seeded == 1
+
+    with Database(path, project) as db:
+        # The schema stamp advanced and the per-issue column is gone.
+        with sqlite3.connect(path) as raw:
+            meta = dict(raw.execute("SELECT key, value FROM meta").fetchall())
+            columns = {row[1] for row in raw.execute("PRAGMA table_info(issues)")}
+        assert meta["schema_version"] == SCHEMA_VERSION
+        assert "sha256" not in columns
+        # The surviving v1 issue is still there ...
+        assert db.get_issue(seeded) is not None
+        # ... and the AUTOINCREMENT sequence continues after it.
+        fresh = db.insert_issue(
+            aspect_id="comments",
+            path="src/a.py",
+            description="new issue",
+            line_start=2,
+            line_end=2,
+            severity="low",
+        )
+        assert fresh == seeded + 1
+
+
+def test_v1_database_readonly_open_is_allowed_and_unmigrated(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    path = tmp_path / "khorek.db"
+    _create_v1_db(path, project)
+
+    # A readonly open of a known older schema is allowed and leaves it unmigrated.
+    with Database(path, project, readonly=True) as ro:
+        assert ro.readonly is True
+        assert ro.count_issues() == 1
+        assert ro.list_issues()[0].description == "stale v1 issue"
+
+    with sqlite3.connect(path) as raw:
+        meta = dict(raw.execute("SELECT key, value FROM meta").fetchall())
+        columns = {row[1] for row in raw.execute("PRAGMA table_info(issues)")}
+    assert meta["schema_version"] == "1"  # unchanged
+    assert "sha256" in columns  # column still present
+
+
 def test_state_crud(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()
@@ -132,7 +237,6 @@ def test_issue_crud_counts_and_lookups(tmp_path: Path) -> None:
         first = db.insert_issue(
             aspect_id="comments",
             path="src/a.py",
-            sha256="sha1",
             description="bad comment",
             line_start=1,
             line_end=2,
@@ -141,7 +245,6 @@ def test_issue_crud_counts_and_lookups(tmp_path: Path) -> None:
         second = db.insert_issue(
             aspect_id="dead-code",
             path="src/a.py",
-            sha256="sha1",
             description="unused import",
             line_start=3,
             line_end=3,
@@ -150,7 +253,6 @@ def test_issue_crud_counts_and_lookups(tmp_path: Path) -> None:
         db.insert_issue(
             aspect_id="comments",
             path="src/b.py",
-            sha256="sha2",
             description="other",
             line_start=1,
             line_end=1,
@@ -199,7 +301,6 @@ def _seed_filter_fixtures(db: Database) -> dict[str, int]:
         ids[name] = db.insert_issue(
             aspect_id=aspect,
             path=path,
-            sha256="sha",
             description=f"issue {name}",
             line_start=1,
             line_end=1,
@@ -283,7 +384,6 @@ def test_list_issues_invalid_severity_rejected(tmp_path: Path) -> None:
         db.insert_issue(
             aspect_id="comments",
             path="src/a.py",
-            sha256="sha",
             description="x",
             line_start=1,
             line_end=1,
@@ -330,7 +430,6 @@ def test_readonly_database_reads_and_validates(tmp_path: Path) -> None:
         issue_id = db.insert_issue(
             aspect_id="comments",
             path="src/a.py",
-            sha256="sha",
             description="x",
             line_start=1,
             line_end=1,
@@ -394,7 +493,6 @@ def test_update_issue_rejects_unknown_fields(tmp_path: Path) -> None:
         issue_id = db.insert_issue(
             aspect_id="comments",
             path="src/a.py",
-            sha256="sha",
             description="x",
             line_start=1,
             line_end=1,
@@ -427,7 +525,6 @@ def test_prune_drift_removes_only_absent_aspects(tmp_path: Path) -> None:
         db.insert_issue(
             aspect_id="kept",
             path="src/a.py",
-            sha256="sha1",
             description="kept",
             line_start=1,
             line_end=1,
@@ -436,7 +533,6 @@ def test_prune_drift_removes_only_absent_aspects(tmp_path: Path) -> None:
         db.insert_issue(
             aspect_id="gone",
             path="src/a.py",
-            sha256="sha1",
             description="gone",
             line_start=1,
             line_end=1,
@@ -445,7 +541,6 @@ def test_prune_drift_removes_only_absent_aspects(tmp_path: Path) -> None:
         db.insert_issue(
             aspect_id="gone",
             path="src/b.py",
-            sha256="sha2",
             description="gone too",
             line_start=1,
             line_end=1,
@@ -465,7 +560,6 @@ def test_prune_drift_with_empty_config_removes_everything(tmp_path: Path) -> Non
         db.insert_issue(
             aspect_id="gone",
             path="src/a.py",
-            sha256="sha1",
             description="gone",
             line_start=1,
             line_end=1,

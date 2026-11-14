@@ -336,14 +336,17 @@ def seed_issue(
     line_end: int = 1,
     severity: str = "high",
     retry_count: int = 0,
-    sha256: str | None = None,
 ) -> int:
-    """Insert one open issue whose sha matches the file by default."""
+    """Insert one open issue.
+
+    Issues carry no sha of their own: the pair's ``file_aspect_state`` row is
+    the version token.  Pair a call with :func:`seed_state` (matching sha) to
+    make the issue fresh, or with a drifted ``seed_state`` to make it stale.
+    """
     with Database(project.db_path, project.root) as database:
         issue_id = database.insert_issue(
             aspect_id=aspect_id,
             path=path,
-            sha256=sha256 if sha256 is not None else sha256_file(project.root / path),
             description=description,
             line_start=line_start,
             line_end=line_end,

@@ -292,7 +292,6 @@ def test_combined_summary_reports_unified_counters_and_pruned(tmp_path: Path, ca
         database.insert_issue(
             aspect_id="retired",
             path="src/a.py",
-            sha256="sha",
             description="old issue",
             line_start=1,
             line_end=1,
