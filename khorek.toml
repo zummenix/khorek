@@ -2,10 +2,10 @@
 base_url = "http://127.0.0.1:11434/v1"
 model = "qwen3.8:27b-mxfp8"
 temperature = 0.2
-call_timeout = 600
+call_timeout = 3600
 # Hard output cap (Ollama: num_predict). Even a stuck thinking model
 # now stops with finish_reason=length instead of running to the timeout.
-max_tokens = 8192
+max_tokens = 16000
 
 [observe]
 # Record every model request/response for `khorek traces`.
@@ -30,7 +30,7 @@ max_tool_calls = 20
 
 [agents.fixer]
 reasoning_effort = "low"
-max_attempts = 3
+max_attempts = 5
 max_tool_calls = 20
 
 [agents.verifier]
