@@ -44,7 +44,7 @@ CREATE TABLE IF NOT EXISTS issues (
   path        TEXT NOT NULL,
   sha256      TEXT NOT NULL,          -- hash of the file when the issue was found
   description TEXT NOT NULL,          -- free form, what is wrong
-  line_start  INTEGER NOT NULL,       -- 1-based, validated to be within the file
+  line_start  INTEGER NOT NULL,       -- 1-based line number (clamped upstream)
   line_end    INTEGER NOT NULL,
   severity    TEXT NOT NULL CHECK (severity IN ('low', 'medium', 'high')),
   retry_count INTEGER NOT NULL DEFAULT 0,

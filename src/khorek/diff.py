@@ -4,8 +4,8 @@ The Reviewer sees the full change set the Fixer produced: every file the Fixer
 modified or created, as a standard unified diff.  The diff is computed from the
 per-issue :class:`~khorek.snapshots.Snapshotter`, which captured the issue's
 file before the Fixer ran and every extra file the Fixer's mutating tools
-touched.  Hunk headers (``@@ -a,b +c,d @@``) carry the line anchors; line
-numbers refer to the post-fix file.
+touched.  Hunk headers (``@@ -a,b +c,d @@``) carry the line anchors; the
+``-a,b`` side refers to the pre-fix file and ``+c,d`` to the post-fix file.
 """
 
 from __future__ import annotations

@@ -206,7 +206,9 @@ def _indent(text: str) -> list[str]:
 def render_list(issues: Sequence[Issue], *, stale: Mapping[int, str] | None) -> str:
     """Render the issues list block (rows plus footer), or ``no open issues``.
 
-    Rows are sorted by id and aligned in dynamic-width columns (like ``ps``):
+    Rows are rendered in the given order (callers pass issues already sorted
+    by id, as returned by :meth:`~khorek.db.Database.list_issues`) and
+    aligned in dynamic-width columns (like ``ps``):
     ``<id> | <created date>  <aspect>  <severity>  <path>:<lines>``.  When
     *stale* is given (stale-showing mode), rows whose status is not FRESH are
     suffixed with ``[stale]`` and the footer counts them.
