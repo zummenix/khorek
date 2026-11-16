@@ -6,6 +6,7 @@ from pathlib import Path
 
 from khorek.db import Database
 from khorek.files import sha256_file
+from khorek.trace import TraceStore
 from khorek.workflows.fix import build_queue
 from tests.conftest import (
     FakeModel,
@@ -13,6 +14,7 @@ from tests.conftest import (
     fix_args,
     make_project,
     python_command,
+    revalidate,
     review,
     run_cli,
     seed_issue,
@@ -79,7 +81,10 @@ def test_successful_fix_marks_pair_clean_with_new_sha(tmp_path: Path, capsys) ->
     assert fake.model_requests == 1
     output = capsys.readouterr().out
     assert "fix #1 comments src/a.py: fixed" in output
-    assert "1 attempted, 1 fixed, 0 failed, 0 rejected, 0 skipped-stale, 0 open issues" in output
+    assert (
+        "1 attempted, 1 fixed, 0 revalidated, 0 resolved, "
+        "0 failed, 0 rejected, 0 skipped-stale, 0 open issues" in output
+    )
 
 
 def test_successful_fix_prints_problem_and_fix_block(tmp_path: Path, capsys) -> None:
@@ -261,7 +266,7 @@ def test_verifier_cannot_override_a_failing_exit_code(tmp_path: Path, capsys) ->
     assert project.read("src/a.py") == "value = 1\n"
     output = capsys.readouterr().out
     assert "verification failed (round 1/1)" in output
-    assert "1 attempted, 0 fixed, 1 failed" in output
+    assert "1 attempted, 0 fixed, 0 revalidated, 0 resolved, 1 failed" in output
 
 
 def test_exhausted_attempts_restore_file_and_keep_issue_open(tmp_path: Path, capsys) -> None:
@@ -316,7 +321,10 @@ def test_file_drifted_since_explore_drops_pair_issues(tmp_path: Path, capsys) ->
     assert issues(project) == []
     output = capsys.readouterr().out
     assert "skipped (stale hash)" in output
-    assert "1 attempted, 0 fixed, 0 failed, 0 rejected, 1 skipped-stale, 0 open issues" in output
+    assert (
+        "1 attempted, 0 fixed, 0 revalidated, 0 resolved, "
+        "0 failed, 0 rejected, 1 skipped-stale, 0 open issues" in output
+    )
 
 
 def test_stale_skip_prints_no_report_block(tmp_path: Path, capsys) -> None:
@@ -377,6 +385,8 @@ def test_hash_advance_lets_a_second_issue_in_the_same_file_be_fixed(tmp_path: Pa
             edit("alpha = 1", "alpha = 2"),
             fix_report("fixed alpha"),
             review(True, "good"),
+            # After the first fix the sibling issue is re-validated: it survives.
+            revalidate({"issue_id": second, "status": "uncertain"}),
             edit("beta = 1", "beta = 2"),
             fix_report("fixed beta"),
             review(True, "good"),
@@ -387,7 +397,7 @@ def test_hash_advance_lets_a_second_issue_in_the_same_file_be_fixed(tmp_path: Pa
 
     assert first != second
     assert project.read("src/a.py") == "alpha = 2\nbeta = 2\n"
-    assert fake.chat_calls == 6
+    assert fake.chat_calls == 7
     assert issues(project) == []
     row = state(project)
     assert row is not None
@@ -405,7 +415,13 @@ def test_fix_advances_pair_state_leaving_siblings_fixable(tmp_path: Path, capsys
     first = seed_issue(project, description="alpha is wrong", line_start=1, line_end=1)
     second = seed_issue(project, description="beta is wrong", line_start=2, line_end=2)
     fake = FakeModel(
-        [edit("alpha = 1", "alpha = 2"), fix_report("fixed alpha"), review(True, "good")]
+        [
+            edit("alpha = 1", "alpha = 2"),
+            fix_report("fixed alpha"),
+            review(True, "good"),
+            # The sibling issue is re-validated after the fix and survives.
+            revalidate({"issue_id": second, "status": "uncertain"}),
+        ]
     )
 
     assert run_cli(fake, *fix_args(project, "--limit", "1")) == 1
@@ -420,7 +436,7 @@ def test_fix_advances_pair_state_leaving_siblings_fixable(tmp_path: Path, capsys
     assert row.sha256 == sha256_file(project.root / "src/a.py")
     assert first != second
     output = capsys.readouterr().out
-    assert "1 attempted, 1 fixed, 0 failed" in output
+    assert "1 attempted, 1 fixed, 0 revalidated, 0 resolved, 0 failed" in output
     assert "1 open issues" in output
 
     # The sibling is fixable on the next run: the advanced state row matches.
@@ -446,11 +462,17 @@ def test_cross_aspect_fix_advances_other_aspect_state(tmp_path: Path) -> None:
     seed_state(project, aspect_id="comments", outcome="issues")
     seed_state(project, aspect_id="naming", outcome="issues")
     seed_issue(project, aspect_id="comments", description="bad comment")
-    seed_issue(project, aspect_id="naming", description="bad name")
+    naming_issue = seed_issue(project, aspect_id="naming", description="bad name")
 
-    # Fix only the comments issue (limit the run to one attempt).
+    # Fix only the comments issue (limit the run to one attempt).  The naming
+    # issue is cross-aspect re-validated after the fix and survives.
     fake = FakeModel(
-        [edit("alpha = 1", "alpha = 2"), fix_report("fixed comment"), review(True, "good")]
+        [
+            edit("alpha = 1", "alpha = 2"),
+            fix_report("fixed comment"),
+            review(True, "good"),
+            revalidate({"issue_id": naming_issue, "status": "uncertain"}),
+        ]
     )
     assert run_cli(fake, *fix_args(project, "--limit", "1")) == 1
 
@@ -520,7 +542,10 @@ def test_deleted_file_drops_pair_issues(tmp_path: Path, capsys) -> None:
     assert issues(project) == []
     output = capsys.readouterr().out
     assert "skipped (stale hash)" in output
-    assert "1 attempted, 0 fixed, 0 failed, 0 rejected, 1 skipped-stale, 0 open issues" in output
+    assert (
+        "1 attempted, 0 fixed, 0 revalidated, 0 resolved, "
+        "0 failed, 0 rejected, 1 skipped-stale, 0 open issues" in output
+    )
 
 
 def test_state_none_with_open_issue_is_still_fixable(tmp_path: Path, capsys) -> None:
@@ -574,7 +599,7 @@ def test_fixed_true_without_a_file_change_fails_the_issue(tmp_path: Path, capsys
     assert "no file changes" in stored[0].last_error
     assert fake.chat_calls == 1
     output = capsys.readouterr().out
-    assert "1 attempted, 0 fixed, 1 failed" in output
+    assert "1 attempted, 0 fixed, 0 revalidated, 0 resolved, 1 failed" in output
 
 
 def test_limit_counts_stale_pair_once_leaves_budget(tmp_path: Path, capsys) -> None:
@@ -602,7 +627,10 @@ def test_limit_counts_stale_pair_once_leaves_budget(tmp_path: Path, capsys) -> N
     # The drifted pair dropped in a single skip; the live issue was fixed.
     assert issues(project) == []
     output = capsys.readouterr().out
-    assert "2 attempted, 1 fixed, 0 failed, 0 rejected, 1 skipped-stale, 0 open issues" in output
+    assert (
+        "2 attempted, 1 fixed, 0 revalidated, 0 resolved, "
+        "0 failed, 0 rejected, 1 skipped-stale, 0 open issues" in output
+    )
 
 
 def test_fixed_false_ends_attempts_without_verification(tmp_path: Path, capsys) -> None:
@@ -627,7 +655,7 @@ def test_fixed_false_ends_attempts_without_verification(tmp_path: Path, capsys) 
     assert len(stored) == 1
     assert stored[0].retry_count == 1
     assert stored[0].last_error == "cannot fix this"
-    assert "0 fixed, 1 failed" in capsys.readouterr().out
+    assert "0 fixed, 0 revalidated, 0 resolved, 1 failed" in capsys.readouterr().out
 
 
 def test_failed_fix_prints_no_report_block(tmp_path: Path, capsys) -> None:
@@ -680,7 +708,7 @@ def test_fixer_agent_error_ends_attempts_without_verification(tmp_path: Path, ca
     assert "fixer [loop]" in stored[0].last_error
     output = capsys.readouterr().out
     assert "fixer [loop]" in output
-    assert "0 fixed, 1 failed" in output
+    assert "0 fixed, 0 revalidated, 0 resolved, 1 failed" in output
 
 
 def test_queue_order_is_retry_count_then_severity_then_created_at(tmp_path: Path) -> None:
@@ -751,6 +779,8 @@ def test_one_failed_issue_does_not_abort_the_run(tmp_path: Path, capsys) -> None
             edit("beta = 1", "beta = 2"),
             fix_report("fixed beta"),
             review(True, "good"),
+            # After the second fix the still-open first issue is re-validated.
+            revalidate({"issue_id": first, "status": "uncertain"}),
         ]
     )
 
@@ -808,7 +838,10 @@ def test_review_rejection_feeds_reason_back_and_retries(tmp_path: Path, capsys) 
     assert "review rejected (handoff 1/2)" in output
     assert "fix #1 comments src/a.py: fixed" in output
     assert ("  fix:\n    fixed properly\n  review:\n    looks good\n") in output
-    assert "1 attempted, 1 fixed, 0 failed, 1 rejected, 0 skipped-stale, 0 open issues" in output
+    assert (
+        "1 attempted, 1 fixed, 0 revalidated, 0 resolved, "
+        "0 failed, 1 rejected, 0 skipped-stale, 0 open issues" in output
+    )
 
 
 def test_rejection_exhausts_default_max_handoffs(tmp_path: Path, capsys) -> None:
@@ -842,7 +875,10 @@ def test_rejection_exhausts_default_max_handoffs(tmp_path: Path, capsys) -> None
     output = capsys.readouterr().out
     assert "review rejected (handoff 1/2)" in output
     assert "review rejected (handoff 2/2)" in output
-    assert "1 attempted, 0 fixed, 1 failed, 2 rejected, 0 skipped-stale, 1 open issues" in output
+    assert (
+        "1 attempted, 0 fixed, 0 revalidated, 0 resolved, "
+        "1 failed, 2 rejected, 0 skipped-stale, 1 open issues" in output
+    )
 
 
 def test_review_rejection_fails_when_rounds_exhaust_max_attempts(tmp_path: Path, capsys) -> None:
@@ -881,7 +917,10 @@ def test_review_rejection_fails_when_rounds_exhaust_max_attempts(tmp_path: Path,
     output = capsys.readouterr().out
     assert "verification failed (round 1/2)" in output
     assert "review rejected (handoff 1/2)" in output
-    assert "1 attempted, 0 fixed, 1 failed, 1 rejected, 0 skipped-stale, 1 open issues" in output
+    assert (
+        "1 attempted, 0 fixed, 0 revalidated, 0 resolved, "
+        "1 failed, 1 rejected, 0 skipped-stale, 1 open issues" in output
+    )
 
 
 def test_reviewer_error_treats_fix_as_approved(tmp_path: Path, capsys) -> None:
@@ -915,7 +954,10 @@ def test_reviewer_error_treats_fix_as_approved(tmp_path: Path, capsys) -> None:
     assert "treating as approved" in output
     assert "fix #1 comments src/a.py: fixed" in output
     assert "  review:" not in output
-    assert "1 attempted, 1 fixed, 0 failed, 0 rejected, 0 skipped-stale, 0 open issues" in output
+    assert (
+        "1 attempted, 1 fixed, 0 revalidated, 0 resolved, "
+        "0 failed, 0 rejected, 0 skipped-stale, 0 open issues" in output
+    )
 
 
 def test_rejected_counter_accumulates_across_issues(tmp_path: Path, capsys) -> None:
@@ -926,7 +968,7 @@ def test_rejected_counter_accumulates_across_issues(tmp_path: Path, capsys) -> N
     )
     seed_state(project, outcome="issues")
     seed_issue(project, description="alpha is wrong", line_start=1, line_end=1)
-    seed_issue(project, description="beta is wrong", line_start=2, line_end=2)
+    second = seed_issue(project, description="beta is wrong", line_start=2, line_end=2)
     fake = FakeModel(
         [
             # first issue: one rejection, then approved
@@ -936,6 +978,8 @@ def test_rejected_counter_accumulates_across_issues(tmp_path: Path, capsys) -> N
             edit("alpha = 2", "alpha = 3"),
             fix_report("fixed alpha properly"),
             review(True, "good"),
+            # the surviving sibling is re-validated, then the second issue fixed
+            revalidate({"issue_id": second, "status": "uncertain"}),
             # second issue: one rejection, then approved
             edit("beta = 1", "beta = 2"),
             fix_report("fixed beta"),
@@ -950,7 +994,338 @@ def test_rejected_counter_accumulates_across_issues(tmp_path: Path, capsys) -> N
 
     assert project.read("src/a.py") == "alpha = 3\nbeta = 3\n"
     assert issues(project) == []
-    assert fake.chat_calls == 12
+    assert fake.chat_calls == 13
 
     output = capsys.readouterr().out
-    assert "2 attempted, 2 fixed, 0 failed, 2 rejected, 0 skipped-stale, 0 open issues" in output
+    assert (
+        "2 attempted, 2 fixed, 0 revalidated, 0 resolved, "
+        "0 failed, 2 rejected, 0 skipped-stale, 0 open issues" in output
+    )
+
+
+# -- revalidation (Phase 2: self-healing revalidation of a fixed pair) ---
+#
+# After a successful fix advances a file's version, the pair's remaining open
+# issues (every aspect that still has one on the path) are re-judged against the
+# post-fix contents by a read-only LLM step, and the verdicts are applied in
+# place: `valid` refreshes the lines, `gone` (with a reason) closes the issue,
+# and `uncertain` / a missing verdict / an unknown id / out-of-range lines leave
+# the row untouched (silence is never loss).  Revalidation is eager,
+# cross-aspect, and free of the `--limit` attempt budget.
+
+
+def test_revalidation_refreshes_a_sibling_issue_in_place(tmp_path: Path, capsys) -> None:
+    """A `valid` verdict refreshes a sibling's lines without touching retry_count."""
+    project = make_project(
+        tmp_path / "project",
+        files={"src/a.py": "alpha = 1\nbeta = 1\ngamma = 1\n"},
+        verify=TRUE_VERIFY,
+    )
+    seed_state(project, outcome="issues")
+    seed_issue(project, description="alpha is wrong", line_start=1, line_end=1)
+    second = seed_issue(
+        project, description="gamma is wrong", line_start=3, line_end=3, retry_count=1
+    )
+    fake = FakeModel(
+        [
+            # the fix inserts a line, shifting gamma from line 3 down to line 4
+            edit("alpha = 1", "alpha = 1\nalpha2 = 1"),
+            fix_report("inserted a line"),
+            review(True, "good"),
+            # gamma still exists, now at line 4
+            revalidate({"issue_id": second, "status": "valid", "line_start": 4, "line_end": 4}),
+        ]
+    )
+
+    assert run_cli(fake, *fix_args(project, "--limit", "1")) == 1
+
+    stored = issues(project)
+    assert [entry.id for entry in stored] == [second]
+    refreshed = stored[0]
+    assert (refreshed.line_start, refreshed.line_end) == (4, 4)
+    # revalidation must not reset the retry budget or the description
+    assert refreshed.retry_count == 1
+    assert refreshed.description == "gamma is wrong"
+    output = capsys.readouterr().out
+    assert "1 revalidated, 0 resolved" in output
+    assert "fix #2 comments src/a.py: revalidated (lines 4)" in output
+
+
+def test_revalidation_gone_closes_a_sibling_with_a_reason(tmp_path: Path, capsys) -> None:
+    project = make_project(
+        tmp_path / "project",
+        files={"src/a.py": "alpha = 1\nbeta = 1\n"},
+        verify=TRUE_VERIFY,
+    )
+    seed_state(project, outcome="issues")
+    seed_issue(project, description="alpha is wrong", line_start=1, line_end=1)
+    second = seed_issue(project, description="beta is wrong", line_start=2, line_end=2)
+    fake = FakeModel(
+        [
+            edit("alpha = 1", "alpha = 2"),
+            fix_report("fixed alpha"),
+            review(True, "good"),
+            revalidate(
+                {
+                    "issue_id": second,
+                    "status": "gone",
+                    "reason": "the same edit corrected beta",
+                }
+            ),
+        ]
+    )
+
+    assert run_cli(fake, *fix_args(project)) == 0
+
+    assert issues(project) == []
+    output = capsys.readouterr().out
+    assert "0 revalidated, 1 resolved" in output
+    assert "closed by revalidation (the same edit corrected beta)" in output
+    # edit / fix_report / review for #1, then one revalidation call
+    assert fake.chat_calls == 4
+
+
+def test_revalidation_uncertain_leaves_the_issue_unchanged(tmp_path: Path) -> None:
+    project = make_project(
+        tmp_path / "project",
+        files={"src/a.py": "alpha = 1\nbeta = 1\n"},
+        verify=TRUE_VERIFY,
+    )
+    seed_state(project, outcome="issues")
+    seed_issue(project, description="alpha is wrong", line_start=1, line_end=1)
+    second = seed_issue(
+        project, description="beta is wrong", line_start=2, line_end=2, retry_count=1
+    )
+    fake = FakeModel(
+        [
+            edit("alpha = 1", "alpha = 2"),
+            fix_report("fixed alpha"),
+            review(True, "good"),
+            revalidate({"issue_id": second, "status": "uncertain"}),
+        ]
+    )
+
+    assert run_cli(fake, *fix_args(project, "--limit", "1")) == 1
+
+    stored = issues(project)
+    assert [entry.id for entry in stored] == [second]
+    entry = stored[0]
+    assert (entry.line_start, entry.line_end) == (2, 2)
+    assert entry.description == "beta is wrong"
+    assert entry.retry_count == 1
+
+
+def test_revalidation_ignores_unknown_issue_ids(tmp_path: Path) -> None:
+    project = make_project(
+        tmp_path / "project",
+        files={"src/a.py": "alpha = 1\nbeta = 1\n"},
+        verify=TRUE_VERIFY,
+    )
+    seed_state(project, outcome="issues")
+    seed_issue(project, description="alpha is wrong", line_start=1, line_end=1)
+    second = seed_issue(project, description="beta is wrong", line_start=2, line_end=2)
+    fake = FakeModel(
+        [
+            edit("alpha = 1", "alpha = 2"),
+            fix_report("fixed alpha"),
+            review(True, "good"),
+            # a verdict for a non-existent id is ignored; #2 gets no verdict
+            revalidate({"issue_id": 999, "status": "gone", "reason": "x"}),
+        ]
+    )
+
+    assert run_cli(fake, *fix_args(project, "--limit", "1")) == 1
+
+    stored = issues(project)
+    assert [entry.id for entry in stored] == [second]
+    assert (stored[0].line_start, stored[0].line_end) == (2, 2)
+
+
+def test_revalidation_missing_verdict_leaves_issue_unchanged(tmp_path: Path) -> None:
+    project = make_project(
+        tmp_path / "project",
+        files={"src/a.py": "alpha = 1\nbeta = 1\n"},
+        verify=TRUE_VERIFY,
+    )
+    seed_state(project, outcome="issues")
+    seed_issue(project, description="alpha is wrong", line_start=1, line_end=1)
+    second = seed_issue(project, description="beta is wrong", line_start=2, line_end=2)
+    fake = FakeModel(
+        [
+            edit("alpha = 1", "alpha = 2"),
+            fix_report("fixed alpha"),
+            review(True, "good"),
+            revalidate(),  # an empty report: no verdicts at all
+        ]
+    )
+
+    assert run_cli(fake, *fix_args(project, "--limit", "1")) == 1
+
+    stored = issues(project)
+    assert [entry.id for entry in stored] == [second]
+
+
+def test_revalidation_clamps_out_of_range_lines(tmp_path: Path) -> None:
+    project = make_project(
+        tmp_path / "project",
+        files={"src/a.py": "alpha = 1\nbeta = 1\n"},
+        verify=TRUE_VERIFY,
+    )
+    seed_state(project, outcome="issues")
+    seed_issue(project, description="alpha is wrong", line_start=1, line_end=1)
+    second = seed_issue(project, description="beta is wrong", line_start=2, line_end=2)
+    fake = FakeModel(
+        [
+            edit("alpha = 1", "alpha = 2"),
+            fix_report("fixed alpha"),
+            review(True, "good"),
+            # a `valid` verdict with lines past the end of the file is clamped
+            revalidate(
+                {"issue_id": second, "status": "valid", "line_start": 999, "line_end": 1000}
+            ),
+        ]
+    )
+
+    assert run_cli(fake, *fix_args(project, "--limit", "1")) == 1
+
+    stored = issues(project)
+    assert [entry.id for entry in stored] == [second]
+    assert (stored[0].line_start, stored[0].line_end) == (2, 2)
+
+
+def test_revalidation_gone_drains_a_sibling_aspect(tmp_path: Path, capsys) -> None:
+    """Cross-aspect: a `gone` verdict drains a sibling aspect's pair to clean."""
+    project = make_project(
+        tmp_path / "project",
+        files={"src/a.py": "alpha = 1\n"},
+        aspects=[
+            {"id": "comments", "prompt": "Find bad comments.", "files": ["src/"]},
+            {"id": "naming", "prompt": "Find bad names.", "files": ["src/"]},
+        ],
+        verify=TRUE_VERIFY,
+    )
+    seed_state(project, aspect_id="comments", outcome="issues")
+    seed_state(project, aspect_id="naming", outcome="issues")
+    seed_issue(project, aspect_id="comments", description="bad comment")
+    naming_issue = seed_issue(project, aspect_id="naming", description="bad name")
+
+    fake = FakeModel(
+        [
+            edit("alpha = 1", "alpha = 2"),
+            fix_report("fixed comment"),
+            review(True, "good"),
+            # the naming issue is closed by revalidation, draining its pair
+            revalidate(
+                {
+                    "issue_id": naming_issue,
+                    "status": "gone",
+                    "reason": "the name was fixed by the same edit",
+                }
+            ),
+        ]
+    )
+
+    # both issues are gone (#1 fixed, #2 closed by revalidation), so the run
+    # ends clean even though only one attempt was spent
+    assert run_cli(fake, *fix_args(project, "--limit", "1")) == 0
+
+    assert issues(project) == []
+    naming_state = state(project, aspect="naming")
+    assert naming_state is not None
+    assert naming_state.outcome == "clean"
+    output = capsys.readouterr().out
+    assert "1 resolved" in output
+
+
+def test_revalidation_does_not_consume_the_attempt_budget(tmp_path: Path) -> None:
+    """A revalidation model call is free of the `--limit` attempt budget."""
+    project = make_project(
+        tmp_path / "project",
+        files={"src/a.py": "alpha = 1\nbeta = 1\n"},
+        verify=TRUE_VERIFY,
+    )
+    seed_state(project, outcome="issues")
+    seed_issue(project, description="alpha is wrong", line_start=1, line_end=1)
+    second = seed_issue(project, description="beta is wrong", line_start=2, line_end=2)
+    fake = FakeModel(
+        [
+            edit("alpha = 1", "alpha = 2"),
+            fix_report("fixed alpha"),
+            review(True, "good"),
+            # the revalidation of the sibling is an extra model call, not an attempt
+            revalidate({"issue_id": second, "status": "uncertain"}),
+        ]
+    )
+
+    # --limit 1 spends the single attempt on #1; #2 is re-validated and left open
+    assert run_cli(fake, *fix_args(project, "--limit", "1")) == 1
+
+    stored = issues(project)
+    assert [entry.id for entry in stored] == [second]
+    # edit / fix_report / review for #1, then one revalidation call
+    assert fake.chat_calls == 4
+
+
+def test_revalidation_is_traced_as_a_revalidate_run(tmp_path: Path) -> None:
+    """Revalidation runs under the read-only tool set and a `:revalidate` label."""
+    project = make_project(
+        tmp_path / "project",
+        files={"src/a.py": "alpha = 1\nbeta = 1\n"},
+        verify=TRUE_VERIFY,
+        observe={"enabled": True},
+    )
+    seed_state(project, outcome="issues")
+    seed_issue(project, description="alpha is wrong", line_start=1, line_end=1)
+    second = seed_issue(project, description="beta is wrong", line_start=2, line_end=2)
+    fake = FakeModel(
+        [
+            edit("alpha = 1", "alpha = 2"),
+            fix_report("fixed alpha"),
+            review(True, "good"),
+            revalidate({"issue_id": second, "status": "uncertain"}),
+        ]
+    )
+
+    assert run_cli(fake, *fix_args(project, "--limit", "1")) == 1
+
+    store = TraceStore(project.trace_root)
+    events = store.events(store.list_runs()[0].id)
+    revalidate_calls = [
+        event
+        for event in events
+        if event["kind"] == "model_call"
+        and event.get("agent") == "aspect:comments:src/a.py:revalidate"
+    ]
+    assert len(revalidate_calls) == 1
+    tool_names = {tool["function"]["name"] for tool in revalidate_calls[0]["request"]["tools"]}
+    assert tool_names == {"read_file", "grep", "list_files", "report_revalidation"}
+
+
+def test_issues_list_shows_refreshed_lines_after_revalidation(tmp_path: Path, capsys) -> None:
+    """An e2e-style check: a later `khorek issues list` reflects the refresh."""
+    project = make_project(
+        tmp_path / "project",
+        files={"src/a.py": "alpha = 1\nbeta = 1\ngamma = 1\n"},
+        verify=TRUE_VERIFY,
+    )
+    seed_state(project, outcome="issues")
+    seed_issue(project, description="alpha is wrong", line_start=1, line_end=1)
+    second = seed_issue(project, description="gamma is wrong", line_start=3, line_end=3)
+    fake = FakeModel(
+        [
+            # the fix inserts a line, shifting gamma from line 3 down to line 4
+            edit("alpha = 1", "alpha = 1\nalpha2 = 1"),
+            fix_report("inserted a line"),
+            review(True, "good"),
+            revalidate({"issue_id": second, "status": "valid", "line_start": 4, "line_end": 4}),
+        ]
+    )
+    assert run_cli(fake, *fix_args(project, "--limit", "1")) == 1
+
+    # a fresh, lockless `khorek issues list` reflects the refreshed line span
+    assert (
+        run_cli(FakeModel([]), "issues", "list", "-p", project.root, "--db", project.db_path) == 0
+    )
+    output = capsys.readouterr().out
+    assert "src/a.py:4" in output
+    assert str(second) in output

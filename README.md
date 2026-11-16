@@ -26,6 +26,11 @@ with a verifier in the loop so nothing lands unvalidated.
 are recorded in a local SQLite database. Each issue is then fixed individually
 by a fixer agent, and a verifier loop re-checks the fix before it's accepted.
 
+After a fix moves a file, the pair's *remaining* open issues on that file are
+re-judged against the new contents (a read-only **revalidation** step), so the
+issue list stays accurate: an issue resolved along the way closes cleanly and a
+still-open one gets its line numbers refreshed.
+
 ## Quick start
 
 Requires [uv](https://docs.astral.sh/uv/) and a local OpenAI-compatible LLM

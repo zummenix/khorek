@@ -31,10 +31,18 @@ class ExploreStats:
 
 @dataclass
 class FixStats:
-    """Counters for one fix run."""
+    """Counters for one fix run.
+
+    ``revalidated`` counts sibling issue rows refreshed by a post-fix
+    revalidation (a ``valid`` verdict that moved or re-described the row);
+    ``resolved`` counts sibling rows a ``gone`` verdict closed.  Neither counts
+    against the ``--limit`` attempt budget: the limit counts *attempted* issues.
+    """
 
     attempted: int = 0
     fixed: int = 0
+    revalidated: int = 0
+    resolved: int = 0
     failed: int = 0
     rejected: int = 0
     skipped_stale: int = 0
@@ -45,6 +53,8 @@ class CombinedStats:
     """Counters for one explore-and-fix run (one unified end-of-run line)."""
 
     fixed: int = 0
+    revalidated: int = 0
+    resolved: int = 0
     failed: int = 0
     rejected: int = 0
     skipped_stale: int = 0
@@ -104,6 +114,17 @@ class Reporter:
     def fix_finished(self, issue_id: int, aspect_id: str, path: str) -> None:
         self.message(f"fix #{issue_id} {aspect_id} {path}: fixed")
 
+    def fix_revalidated(
+        self, issue_id: int, aspect_id: str, path: str, line_start: int, line_end: int
+    ) -> None:
+        """Report a sibling issue whose row a revalidation refreshed in place."""
+        lines = str(line_start) if line_start == line_end else f"{line_start}-{line_end}"
+        self.message(f"fix #{issue_id} {aspect_id} {path}: revalidated (lines {lines})")
+
+    def fix_resolved(self, issue_id: int, aspect_id: str, path: str, reason: str) -> None:
+        """Report a sibling issue a revalidation closed as ``gone``."""
+        self.message(f"fix #{issue_id} {aspect_id} {path}: closed by revalidation ({reason})")
+
     def fix_report(self, issue: Issue, fix_summary: str, *, review_summary: str = "") -> None:
         """Print the per-issue problem/fix block after a successful fix.
 
@@ -138,6 +159,8 @@ class Reporter:
             "fix summary: "
             f"{stats.attempted} attempted, "
             f"{stats.fixed} fixed, "
+            f"{stats.revalidated} revalidated, "
+            f"{stats.resolved} resolved, "
             f"{stats.failed} failed, "
             f"{stats.rejected} rejected, "
             f"{stats.skipped_stale} skipped-stale, "
@@ -151,6 +174,8 @@ class Reporter:
         self.message(
             "explore-and-fix summary: "
             f"{stats.fixed} fixed, "
+            f"{stats.revalidated} revalidated, "
+            f"{stats.resolved} resolved, "
             f"{stats.failed} failed, "
             f"{stats.rejected} rejected, "
             f"{stats.skipped_stale} skipped-stale, "

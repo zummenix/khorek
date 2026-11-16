@@ -92,6 +92,16 @@ def review(approved: bool, summary: str) -> Message:
     return tool_message("report_review", {"approved": approved, "summary": summary})
 
 
+def revalidate(*verdicts: dict[str, Any]) -> Message:
+    """Build a ``report_revalidation`` tool call with the given verdicts.
+
+    Each verdict is a dict with ``issue_id`` and ``status`` and optional
+    ``line_start``/``line_end``/``description``/``reason``.  An empty call
+    (``revalidate()``) reports that no open issue survives or is closed.
+    """
+    return tool_message("report_revalidation", {"results": list(verdicts)})
+
+
 def _completion(message: Message, model: str) -> dict[str, Any]:
     return {
         "id": "chatcmpl-fake",

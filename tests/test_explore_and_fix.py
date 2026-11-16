@@ -11,6 +11,7 @@ from tests.conftest import (
     Project,
     explore_and_fix_args,
     make_project,
+    revalidate,
     review,
     run_cli,
     seed_issue,
@@ -150,7 +151,7 @@ def test_failed_issue_is_not_reattempted_and_remains_open(tmp_path: Path, capsys
     assert stored[0].retry_count == 1
     assert stored[0].last_error == "cannot fix this"
     output = capsys.readouterr().out
-    assert "0 fixed, 1 failed" in output
+    assert "0 fixed, 0 revalidated, 0 resolved, 1 failed" in output
     assert "1 remaining" in output
 
 
@@ -204,6 +205,37 @@ def test_limit_caps_attempted_issues_independently(tmp_path: Path, capsys) -> No
     output = capsys.readouterr().out
     assert "1 fixed" in output
     assert "1 remaining" in output
+
+
+def test_revalidation_is_free_of_the_attempt_budget(tmp_path: Path) -> None:
+    """In a combined run, a revalidation call does not consume the `--limit`."""
+    project = make_project(
+        tmp_path / "project",
+        files={"src/a.py": "alpha = 1\nbeta = 1\n"},
+        verify=TRUE_VERIFY,
+    )
+    seed_state(project, outcome="issues")
+    first = seed_issue(project, description="alpha is wrong", line_start=1, line_end=1)
+    second = seed_issue(project, description="beta is wrong", line_start=2, line_end=2)
+    fake = FakeModel(
+        [
+            edit("alpha = 1", "alpha = 2"),
+            fix_report("fixed alpha"),
+            review(True, "good"),
+            # the sibling is re-validated, free of the attempt budget
+            revalidate({"issue_id": second, "status": "uncertain"}),
+        ]
+    )
+
+    assert run_cli(fake, *explore_and_fix_args(project, "--limit", "1")) == 1
+
+    # 3 calls to fix #1 + 1 revalidation call; the explore phase is skipped
+    # because the attempt budget is spent, so the sibling is left re-validated.
+    assert fake.chat_calls == 4
+    assert any("report_revalidation" in tool_names(call) for call in fake.chat_requests)
+    stored = issues(project)
+    assert [entry.id for entry in stored] == [second]
+    assert second != first
 
 
 def test_loop_terminates_when_explore_creates_nothing(tmp_path: Path, capsys) -> None:
@@ -303,7 +335,8 @@ def test_combined_summary_reports_unified_counters_and_pruned(tmp_path: Path, ca
 
     output = capsys.readouterr().out
     assert (
-        "explore-and-fix summary: 0 fixed, 0 failed, 0 rejected, 0 skipped-stale, "
+        "explore-and-fix summary: 0 fixed, 0 revalidated, 0 resolved, "
+        "0 failed, 0 rejected, 0 skipped-stale, "
         "0 created, 0 remaining, 2 pruned, 0 cycle(s)"
     ) in output
     assert fake.chat_calls == 1

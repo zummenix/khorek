@@ -62,6 +62,19 @@ model saw on that step, including prior tool results.  `request.tools` carries
 each tool's name, description, and JSON schema.  `response` is the raw
 OpenAI-compatible JSON body (or the body text when it could not be parsed).
 
+### Agent labels
+
+Each agent is one `agent_start` … `agent_end` pair, and a single command
+produces several: the fix workflow traces the fixer (`fixer:#{id}:<path>`),
+the reviewer (`reviewer:#{id}:<path>`), and — after every accepted fix that
+moves the file's version — a read-only **revalidation** run per aspect that
+still has an open issue on that path.  The revalidation run's label is the
+aspect's exploratory label plus a `:revalidate` suffix, e.g.
+`aspect:comments:src/a.py:revalidate`, and its `request.tools` is the
+read-only set (`read_file`, `grep`, `list_files`) plus the terminal
+`report_revalidation` — no `ask_explorer`, no fixer tools.  Every closure it
+makes is a `gone` verdict with a reason, so it stays auditable in the trace.
+
 ## View it in a browser
 
 When tracing is enabled, a workflow automatically starts the viewer, opens it

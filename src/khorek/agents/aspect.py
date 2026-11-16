@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Literal
 
@@ -11,6 +12,7 @@ from khorek.agents.explorer import ExplorerAgent, ask_explorer_tool
 from khorek.agents.tools import read_only_tools
 from khorek.config import AspectAgentConfig, AspectConfig, DefaultsConfig
 from khorek.content import format_file_lines
+from khorek.db import Issue
 from khorek.llm import LLMClient, Tool
 from khorek.prompts import default_prompt
 
@@ -44,6 +46,49 @@ class IssueReport(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     issues: list[ReportedIssue]
+
+
+RevalidationStatus = Literal["valid", "gone", "uncertain"]
+
+
+class RevalidationVerdict(BaseModel):
+    """One verdict on a single open issue, keyed by its database id.
+
+    The id is the ``issues`` table primary key, so a verdict maps straight to a
+    row: an unknown id, a missing verdict, or a verdict that cannot be acted on
+    leaves that issue untouched (silence is never loss).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    issue_id: int = Field(description="The database id of the issue this verdict is for.")
+    status: RevalidationStatus = Field(
+        description="valid (survives), gone (resolved by the fix), or uncertain."
+    )
+    line_start: int | None = Field(
+        default=None,
+        description="Refreshed 1-based first line; required when status is valid.",
+    )
+    line_end: int | None = Field(
+        default=None,
+        description="Refreshed 1-based last line; required when status is valid.",
+    )
+    description: str | None = Field(
+        default=None,
+        description="Optional refreshed description, for valid when the wording changed.",
+    )
+    reason: str | None = Field(
+        default=None,
+        description="Required when status is gone: where it went or why it is resolved.",
+    )
+
+
+class RevalidationReport(BaseModel):
+    """Terminal ``report_revalidation`` payload, one verdict per open issue."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    results: list[RevalidationVerdict]
 
 
 def _inline_refs(node: Any, defs: dict[str, Any]) -> Any:
@@ -92,6 +137,33 @@ def report_issues_tool() -> Tool:
     )
 
 
+def report_revalidation_parameters() -> dict[str, Any]:
+    """Flat JSON schema for the terminal ``report_revalidation`` tool."""
+    schema = RevalidationReport.model_json_schema()
+    definitions = schema.get("$defs", {})
+    if not isinstance(definitions, dict):
+        definitions = {}
+    flattened = _inline_refs(schema, definitions)
+    assert isinstance(flattened, dict)
+    return flattened
+
+
+def report_revalidation_tool() -> Tool:
+    """Create the terminal ``report_revalidation`` tool definition."""
+    return Tool(
+        name="report_revalidation",
+        description=(
+            "Report a verdict for each open issue you were given, keyed by its "
+            "database id. Use status 'valid' (with refreshed line_start/line_end) "
+            "when the issue survives, 'gone' (with a concrete reason) when the "
+            "fix resolved it, or 'uncertain' when you cannot tell. This must be "
+            "your final call."
+        ),
+        parameters=report_revalidation_parameters(),
+        handler=None,
+    )
+
+
 def _line_count(content: str) -> int:
     return max(1, len(content.splitlines()))
 
@@ -106,21 +178,22 @@ class AspectAgent:
         project_root: Path,
         config: AspectAgentConfig,
         defaults: DefaultsConfig,
-        explorer: ExplorerAgent,
+        explorer: ExplorerAgent | None = None,
     ) -> None:
         self._client = client
         self._config = config
         self._explorer = explorer
         self._system_prompt = default_prompt("aspect")
+        self._revalidate_prompt = default_prompt("aspect_revalidate")
         self._read_tools = read_only_tools(project_root, defaults.max_file_bytes)
 
     def review(self, *, aspect: AspectConfig, path: str, content: str) -> IssueReport:
         """Review one file for *aspect* and return the validated report."""
-        tools = [
-            *self._read_tools,
-            ask_explorer_tool(self._explorer, self._config.max_handoffs),
-            report_issues_tool(),
-        ]
+        tools: list[Tool] = list(self._read_tools)
+        # Revalidation never hands off to the explorer; only a full review does.
+        if self._explorer is not None:
+            tools.append(ask_explorer_tool(self._explorer, self._config.max_handoffs))
+        tools.append(report_issues_tool())
         user_prompt = (
             f"Aspect: {aspect.id}\n"
             f"Task: {aspect.prompt}\n\n"
@@ -145,12 +218,82 @@ class AspectAgent:
             raise TypeError("report_issues did not return an IssueReport")
         return data
 
+    def revalidate(
+        self,
+        *,
+        aspect: AspectConfig,
+        path: str,
+        content: str,
+        issues: Sequence[Issue],
+    ) -> RevalidationReport:
+        """Re-judge the open *issues* of *aspect* against the current *content*.
+
+        Runs one bounded, read-only agent loop with the ``report_revalidation``
+        terminal tool and returns the validated report.  The model is given each
+        open issue labelled by its database id, and each verdict maps back to that
+        id.  The loop is traced as ``aspect:<id>:<path>:revalidate``.
+        """
+        tools = [
+            *self._read_tools,
+            report_revalidation_tool(),
+        ]
+        user_prompt = _revalidate_user_prompt(aspect, path, content, issues)
+        result = self._client.run_agent(
+            system_prompt=self._revalidate_prompt,
+            user_prompt=user_prompt,
+            tools=tools,
+            max_tool_calls=self._config.max_tool_calls,
+            force_tool_call=True,
+            text_is_final=False,
+            terminal_tool="report_revalidation",
+            terminal_schema=RevalidationReport,
+            agent=f"aspect:{aspect.id}:{path}:revalidate",
+            reasoning_effort=self._config.reasoning_effort,
+        )
+        data = result.data
+        if not isinstance(data, RevalidationReport):
+            raise TypeError("report_revalidation did not return a RevalidationReport")
+        return data
+
+
+def _revalidate_user_prompt(
+    aspect: AspectConfig,
+    path: str,
+    content: str,
+    issues: Sequence[Issue],
+) -> str:
+    """Build the revalidation user prompt: task, current file, and open issues."""
+    count = max(1, len(content.splitlines()))
+    issue_lines = [
+        f"#{issue.id}: lines {issue.line_start}-{issue.line_end}: {issue.description.strip()}"
+        for issue in issues
+    ]
+    return (
+        f"Aspect: {aspect.id}\n"
+        f"Task: {aspect.prompt}\n\n"
+        f"File: {path}\n"
+        f"Current line count: {count}\n\n"
+        "Open issues for this aspect and file (labelled by database id):\n"
+        + "\n".join(issue_lines)
+        + "\n\n"
+        "Current file contents:\n"
+        f"{format_file_lines(path, content, offset=None, limit=None)}\n\n"
+        "For every issue above, report a verdict with report_revalidation, keyed "
+        "by the issue's id. A 'gone' verdict needs a concrete reason; an issue you "
+        "are unsure about should be 'uncertain', never 'gone'."
+    )
+
 
 __all__ = [
     "AspectAgent",
     "IssueReport",
     "ReportedIssue",
+    "RevalidationReport",
+    "RevalidationStatus",
+    "RevalidationVerdict",
     "Severity",
     "report_issues_parameters",
     "report_issues_tool",
+    "report_revalidation_parameters",
+    "report_revalidation_tool",
 ]

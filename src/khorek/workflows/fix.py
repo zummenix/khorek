@@ -30,9 +30,11 @@ from typing import Any, cast
 
 from langgraph.graph import END, StateGraph
 
+from khorek.agents.aspect import AspectAgent, RevalidationReport
 from khorek.agents.fixer import FixerAgent
 from khorek.agents.reviewer import ReviewerAgent
 from khorek.agents.verifier import VerifierAgent
+from khorek.config import AspectConfig
 from khorek.context import AppContext
 from khorek.db import Database, Issue
 from khorek.diff import format_changes
@@ -145,6 +147,17 @@ class _FixWorkflow:
             config=app.config.agents.reviewer,
             defaults=app.config.defaults,
         )
+        # A read-only aspect agent for post-fix revalidation: it re-judges the
+        # remaining open issues of a path against the new contents.  It carries
+        # no explorer — revalidation never hands off — and a lookup of the
+        # aspect configs so each revalidation runs the aspect's own prompt.
+        self._aspect_agent = AspectAgent(
+            app.llm,
+            project_root=app.project_root,
+            config=app.config.agents.aspect,
+            defaults=app.config.defaults,
+        )
+        self._aspects = {aspect.id: aspect for aspect in app.config.aspects}
         self.recursion_limit = 100 + len(self.queue) * (3 * self.max_attempts + 6)
 
     # -- helpers -------------------------------------------------------
@@ -421,38 +434,175 @@ class _FixWorkflow:
         issue = state.current
         assert issue is not None
         database = self._database
+        path = issue.path
 
         self._database.delete_issue(issue.id)
         # The pair's state row is the version token.  Advancing every aspect's
         # row on this path to the post-fix hash re-keys all sibling issues at
-        # once — the per-issue sha rewrite is gone.  Only a row explored at the
-        # exact content the fix started from (``pre_fix_sha``) is advanced; a
-        # row at different content was never validated against this fix and
-        # stays stale (amendment G2, cross-aspect).
+        # once — the per-issue sha rewrite is gone.  The fixed aspect is always
+        # advanced (its fix was just validated against the new contents); a
+        # sibling aspect is advanced only while it still has an open issue here.
+        # Only a row explored at the exact content the fix started from
+        # (``pre_fix_sha``) is advanced; a row at different content was never
+        # validated against this fix and stays stale (amendment G2, cross-aspect).
+        # The advanced aspects are exactly the ones revalidated below and the
+        # only ones eligible to drain.
+        advanced: set[str] = set()
         for aspect_id in {
-            sibling.aspect_id for sibling in database.open_issues_for_path(issue.path)
+            issue.aspect_id,
+            *{sibling.aspect_id for sibling in database.open_issues_for_path(path)},
         }:
-            row = database.get_state(aspect_id, issue.path)
+            row = database.get_state(aspect_id, path)
             if row is None or row.sha256 != state.pre_fix_sha:
                 continue
-            database.upsert_state(aspect_id, issue.path, state.new_sha, row.outcome)
+            database.upsert_state(aspect_id, path, state.new_sha, row.outcome)
+            advanced.add(aspect_id)
 
-        if not database.open_issues_for(issue.aspect_id, issue.path):
-            row = database.get_state(issue.aspect_id, issue.path)
-            if row is not None:
-                if row.outcome == "truncated":
-                    database.delete_state(issue.aspect_id, issue.path)
-                else:
-                    database.upsert_state(issue.aspect_id, issue.path, state.new_sha, "clean")
+        # Self-healing revalidation: re-judge every advanced aspect that still
+        # has open issues on this path against the post-fix contents, refreshing
+        # or closing their rows in place.  These calls are free of the
+        # ``--limit`` attempt budget; they degrade gracefully on any error.
+        revalidated, resolved = self._revalidate_pair(path, advanced)
+
+        # The pair drained -> mark clean / delete-if-truncated, per aspect that
+        # drained, not just the aspect that was fixed.  A revalidation may have
+        # emptied a sibling aspect, so the drain is keyed on the post-revalidation
+        # issue set, not only on the fixed aspect.
+        for aspect_id in advanced:
+            if database.open_issues_for(aspect_id, path):
+                continue
+            row = database.get_state(aspect_id, path)
+            if row is None:
+                continue
+            if row.outcome == "truncated":
+                database.delete_state(aspect_id, path)
+            else:
+                database.upsert_state(aspect_id, path, state.new_sha, "clean")
 
         # The file changed; a later same-path issue must re-hash it.
-        self._sha_cache.pop(issue.path, None)
-        self.app.reporter.fix_finished(issue.id, issue.aspect_id, issue.path)
+        self._sha_cache.pop(path, None)
+        self.app.reporter.fix_finished(issue.id, issue.aspect_id, path)
         self.app.reporter.fix_report(issue, state.fix_summary, review_summary=state.review_summary)
         return {
-            "stats": replace(state.stats, fixed=state.stats.fixed + 1),
+            "stats": replace(
+                state.stats,
+                fixed=state.stats.fixed + 1,
+                revalidated=state.stats.revalidated + revalidated,
+                resolved=state.stats.resolved + resolved,
+            ),
             **self._reset_issue_fields(),
         }
+
+    def _revalidate_pair(self, path: str, advanced: set[str]) -> tuple[int, int]:
+        """Re-validate the open issues of *advanced* aspects on *path*.
+
+        Reads the post-fix contents and, for every advanced aspect that still has
+        open issues, runs one revalidation call and applies its verdicts in
+        place.  Returns ``(rows refreshed, rows closed)``.  A read failure or an
+        LLM error leaves the affected rows untouched and the fix still stands.
+        """
+        if not advanced:
+            return 0, 0
+        try:
+            content = read_text_file(self.app.project_root / path)
+        except (OSError, PathEscapeError) as exc:
+            self.app.reporter.message(
+                f"khorek: cannot revalidate {path}: {exc}; sibling issues left unchanged"
+            )
+            return 0, 0
+        revalidated = 0
+        resolved = 0
+        for aspect_id in sorted(advanced):
+            issues = self._database.open_issues_for(aspect_id, path)
+            if not issues:
+                continue
+            aspect = self._aspects.get(aspect_id)
+            if aspect is None:
+                # No prompt for this aspect: cannot revalidate; leave as-is.
+                continue
+            report = self._revalidate(aspect, path, content, issues)
+            if report is None:
+                continue
+            revalidated_delta, resolved_delta = self._apply_revalidation(
+                aspect_id, path, content, issues, report
+            )
+            revalidated += revalidated_delta
+            resolved += resolved_delta
+        return revalidated, resolved
+
+    def _revalidate(
+        self,
+        aspect: AspectConfig,
+        path: str,
+        content: str,
+        issues: list[Issue],
+    ) -> RevalidationReport | None:
+        """One revalidation call for *aspect*; ``None`` on an LLM error."""
+        try:
+            return self._aspect_agent.revalidate(
+                aspect=aspect, path=path, content=content, issues=issues
+            )
+        except AgentError as exc:
+            self.app.reporter.message(
+                f"khorek: revalidation for {aspect.id} {path} failed "
+                f"({exc.code}); its issues are left unchanged"
+            )
+            return None
+
+    def _apply_revalidation(
+        self,
+        aspect_id: str,
+        path: str,
+        content: str,
+        issues: list[Issue],
+        report: RevalidationReport,
+    ) -> tuple[int, int]:
+        """Apply a revalidation report in place; return ``(refreshed, closed)``.
+
+        Conservative by construction (silence is never loss): a ``valid`` verdict
+        refreshes the row in place with lines clamped to the current file and an
+        optional description refresh — severity and ``retry_count`` untouched — a
+        ``gone`` verdict with a concrete reason deletes the row, and ``uncertain``,
+        a missing verdict, an unknown id, or a verdict that cannot be acted on
+        leaves the row unchanged.  A verdict for id *N* touches only row *N*.
+        """
+        database = self._database
+        reporter = self.app.reporter
+        line_count = max(1, len(content.splitlines()))
+        open_by_id = {issue.id: issue for issue in issues}
+        revalidated = 0
+        resolved = 0
+        for verdict in report.results:
+            issue = open_by_id.get(verdict.issue_id)
+            if issue is None:
+                continue  # unknown id or already closed earlier this round
+            if verdict.status == "gone":
+                reason = (verdict.reason or "").strip()
+                if not reason:
+                    continue  # gone without a reason: never loss, leave open
+                database.delete_issue(issue.id)
+                reporter.fix_resolved(issue.id, aspect_id, path, reason)
+                resolved += 1
+                open_by_id.pop(issue.id, None)
+            elif verdict.status == "valid":
+                start = issue.line_start
+                end = issue.line_end
+                fields: dict[str, object] = {}
+                if verdict.line_start is not None and verdict.line_end is not None:
+                    start = min(max(1, verdict.line_start), line_count)
+                    end = min(max(start, verdict.line_end), line_count)
+                    fields["line_start"] = start
+                    fields["line_end"] = end
+                description = (verdict.description or "").strip()
+                if description:
+                    fields["description"] = description
+                if not fields:
+                    continue  # a valid verdict with nothing to refresh
+                database.update_issue(issue.id, **fields)
+                reporter.fix_revalidated(issue.id, aspect_id, path, start, end)
+                revalidated += 1
+            # uncertain or an unrecognised status: leave the row unchanged.
+        return revalidated, resolved
 
     def _fail(self, state: FixState) -> dict[str, Any]:
         issue = state.current

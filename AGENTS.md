@@ -5,7 +5,11 @@
 **khorek** is a tool that scouts a codebase for issues and fixes them using
 local agentic LLMs. It runs configurable *aspects* (e.g. "comments consistency")
 over a project, records findings in SQLite, then fixes them one at a time with a
-verifier in the loop.
+verifier in the loop. After a successful fix moves a file's version, the pair's
+remaining open issues on that path are **re-validated** against the new contents
+(a read-only, cross-aspect LLM step): `valid` refreshes the issue's lines,
+`gone` (with a reason) closes it, and `uncertain`/a missing verdict leaves it
+untouched (silence is never loss).
 
 - **Language**: Python >= 3.12
 - **Main libraries**: httpx, langgraph, pathspec, pydantic
