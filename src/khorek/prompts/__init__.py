@@ -8,8 +8,8 @@ _PROMPT_DIR = Path(__file__).parent
 
 
 def default_prompt(name: str) -> str:
-    """Load a bundled prompt file (``aspect``, ``explorer``, ``fixer``,
-    ``verifier``, ``reviewer``)."""
+    """Load a bundled prompt file (``aspect``, ``aspect_revalidate``,
+    ``explorer``, ``fixer``, ``verifier``, ``reviewer``)."""
     path = _PROMPT_DIR / f"{name}.md"
     return path.read_text(encoding="utf-8")
 
