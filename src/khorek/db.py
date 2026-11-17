@@ -22,7 +22,7 @@ from typing import Any
 SCHEMA_VERSION = "2"
 
 # Schema versions below ``SCHEMA_VERSION`` that we know how to migrate from.
-# Every version in this tuple is reachable from ``SCHEMA_VERSION`` by applying
+# Every version in this tuple can reach ``SCHEMA_VERSION`` by applying
 # the migrations in :meth:`Database._migrate` in order.
 _KNOWN_OLDER_VERSIONS = (1,)
 
