@@ -1,6 +1,6 @@
 [llm]
 base_url = "http://127.0.0.1:11434/v1"
-model = "qwen3.8:27b-mxfp8"
+model = "qwen3.8:27b-mlx"
 temperature = 0.2
 call_timeout = 3600
 # Hard output cap (Ollama: num_predict). Even a stuck thinking model
