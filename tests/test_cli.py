@@ -1,4 +1,4 @@
-"""CLI wiring: preamble, exit codes, --db override, locks, and reset."""
+"""CLI wiring: preamble, exit codes, --db override, locks, reset, and issues subcommand."""
 
 from __future__ import annotations
 
