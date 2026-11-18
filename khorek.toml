@@ -54,7 +54,10 @@ timeout = 600
 
 [[aspects]]
 id = "comments"
-prompt = "Look at the comments and find those that are out of sync or contain inconsistencies. Assume code is right."
+prompt = """
+Look at the comments and find those that are out of sync or contain
+inconsistencies, or that are redundant — restating what the code already says or
+adding no new information. Assume the code is correct."""
 files = ["src/**/*.py"]
 max_issues_per_file = 2
 
