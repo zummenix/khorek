@@ -1,4 +1,4 @@
-"""Formatting helpers for presenting file contents to an LLM."""
+"""Tests for khorek.content.format_file_lines."""
 
 from __future__ import annotations
 
