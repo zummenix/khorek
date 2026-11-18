@@ -346,7 +346,6 @@ def test_issues_list_renders_seeded_db(project, capsys) -> None:
     assert "    docstring mentions removed flag --verbose2" in out
     assert "2 open issues" in out
     assert "[stale]" not in out
-    # No model activity.
     assert fake.model_requests == 0
     assert fake.chat_calls == 0
 
