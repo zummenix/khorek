@@ -1,4 +1,4 @@
-"""Fix workflow: success, verification loop, rollback, staleness, queueing."""
+"""Fix workflow: success, verification loop, rollback, staleness, queueing, revalidation."""
 
 from __future__ import annotations
 
