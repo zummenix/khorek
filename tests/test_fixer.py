@@ -33,7 +33,7 @@ def test_edit_file_exact_match_succeeds_and_snapshots(tmp_path: Path) -> None:
     target.write_text("value = 1\nnext = 2\n", encoding="utf-8")
     snapshotter = Snapshotter(root)
 
-    result = handler(edit_file_tool(root, snapshotter))(
+    result = handler(edit_file_tool(root, snapshotter, 16_000))(
         {"path": "a.py", "search": "value = 1", "replace": "value = 10"}
     )
 
@@ -52,7 +52,7 @@ def test_edit_file_missing_search_is_a_structured_error(tmp_path: Path) -> None:
     (root / "a.py").write_text("value = 1\n", encoding="utf-8")
 
     with pytest.raises(ToolValidationError, match="was not found"):
-        handler(edit_file_tool(root, Snapshotter(root)))(
+        handler(edit_file_tool(root, Snapshotter(root), 16_000))(
             {"path": "a.py", "search": "value = 2", "replace": "value = 3"}
         )
 
@@ -63,7 +63,7 @@ def test_edit_file_ambiguous_search_is_a_structured_error(tmp_path: Path) -> Non
     (root / "a.py").write_text("value = 1\nvalue = 1\n", encoding="utf-8")
 
     with pytest.raises(ToolValidationError, match="occurs 2 times"):
-        handler(edit_file_tool(root, Snapshotter(root)))(
+        handler(edit_file_tool(root, Snapshotter(root), 16_000))(
             {"path": "a.py", "search": "value = 1", "replace": "value = 2"}
         )
 
@@ -71,7 +71,7 @@ def test_edit_file_ambiguous_search_is_a_structured_error(tmp_path: Path) -> Non
 def test_edit_file_rejects_empty_search_and_missing_file(tmp_path: Path) -> None:
     root = tmp_path / "project"
     root.mkdir()
-    tool = edit_file_tool(root, Snapshotter(root))
+    tool = edit_file_tool(root, Snapshotter(root), 16_000)
 
     with pytest.raises(ToolValidationError, match="must not be empty"):
         handler(tool)({"path": "a.py", "search": "", "replace": "x"})
@@ -84,10 +84,15 @@ def test_write_file_creates_and_overwrites(tmp_path: Path) -> None:
     root.mkdir()
     (root / "a.py").write_text("old\n", encoding="utf-8")
     snapshotter = Snapshotter(root)
-    tool = write_file_tool(root, snapshotter)
+    tool = write_file_tool(root, snapshotter, 16_000)
 
     created = handler(tool)({"path": "src/new.py", "content": "new = 1\n"})
-    assert created == {"path": "src/new.py", "bytes_written": 8, "created": True}
+    assert created == {
+        "path": "src/new.py",
+        "bytes_written": 8,
+        "created": True,
+        "truncated": False,
+    }
     assert (root / "src" / "new.py").read_text(encoding="utf-8") == "new = 1\n"
 
     overwritten = handler(tool)({"path": "a.py", "content": "replaced\n"})
@@ -104,7 +109,7 @@ def test_write_file_rejects_escaping_paths(tmp_path: Path) -> None:
     root.mkdir()
     outside = tmp_path / "outside"
     outside.mkdir()
-    tool = write_file_tool(root, Snapshotter(root))
+    tool = write_file_tool(root, Snapshotter(root), 16_000)
 
     with pytest.raises(ToolValidationError, match="escapes the project root"):
         handler(tool)({"path": "../outside/x.py", "content": "x\n"})
@@ -124,7 +129,7 @@ def test_edit_file_rejects_escaping_paths(tmp_path: Path) -> None:
     outside = tmp_path / "outside"
     outside.mkdir()
     (outside / "a.py").write_text("x = 1\n", encoding="utf-8")
-    tool = edit_file_tool(root, Snapshotter(root))
+    tool = edit_file_tool(root, Snapshotter(root), 16_000)
 
     with pytest.raises(ToolValidationError, match="escapes the project root"):
         handler(tool)({"path": "../outside/a.py", "search": "x", "replace": "y"})

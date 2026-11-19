@@ -167,3 +167,30 @@ def test_limit_smaller_than_requested_range(tmp_path: Path) -> None:
     expected = _expected("a.py", 2, 2, ["two"], 4)
     expected += "[Truncated: 3 more lines remaining. Use offset=3 to read further.]\n"
     assert result == expected
+
+
+def test_header_false_renders_numbered_lines_only(tmp_path: Path) -> None:
+    _write(tmp_path, "a.py", "one\ntwo\nthree\n")
+
+    result = format_file_lines("a.py", "one\ntwo\nthree\n", header=False)
+
+    assert result == "1 | one\n2 | two\n3 | three\n"
+    assert "File:" not in result
+    assert "[Truncated" not in result
+
+
+def test_header_false_has_no_truncation_footer(tmp_path: Path) -> None:
+    content = "one\ntwo\nthree\nfour\nfive\n"
+    _write(tmp_path, "a.py", content)
+
+    result = format_file_lines("a.py", content, 2, 2, header=False)
+
+    assert result == "2 | two\n3 | three\n"
+    assert "[Truncated" not in result
+    assert "File:" not in result
+
+
+def test_header_false_empty_file_renders_a_blank_numbered_line(tmp_path: Path) -> None:
+    _write(tmp_path, "empty.py", "")
+
+    assert format_file_lines("empty.py", "", header=False) == "1 | \n"

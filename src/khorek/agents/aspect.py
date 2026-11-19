@@ -185,14 +185,21 @@ class AspectAgent:
         self._explorer = explorer
         self._system_prompt = default_prompt("aspect")
         self._revalidate_prompt = default_prompt("aspect_revalidate")
-        self._read_tools = read_only_tools(project_root, defaults.max_file_bytes)
+        self._read_tools = read_only_tools(
+            project_root, defaults.max_file_bytes, defaults.max_tool_output_bytes
+        )
+        self._max_tool_output_bytes = defaults.max_tool_output_bytes
 
     def review(self, *, aspect: AspectConfig, path: str, content: str) -> IssueReport:
         """Review one file for *aspect* and return the validated report."""
         tools: list[Tool] = list(self._read_tools)
         # Revalidation never hands off to the explorer; only a full review does.
         if self._explorer is not None:
-            tools.append(ask_explorer_tool(self._explorer, self._config.max_handoffs))
+            tools.append(
+                ask_explorer_tool(
+                    self._explorer, self._config.max_handoffs, self._max_tool_output_bytes
+                )
+            )
         tools.append(report_issues_tool())
         user_prompt = (
             f"Aspect: {aspect.id}\n"

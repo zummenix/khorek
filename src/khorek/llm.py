@@ -8,7 +8,7 @@ repeat.  The loop enforces these safety rails:
 * repeat-call detection (twice in a row, or a third occurrence overall);
 * one repair attempt for malformed tool arguments;
 * a nudge (then abort) when a tool-required agent replies with text;
-* tool-result truncation with a ``truncated`` marker.
+* tool handlers that return a dict and bound their own output.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from typing import Any, Literal
 import httpx
 from pydantic import BaseModel, ValidationError
 
-from khorek.config import DEFAULT_MAX_PROMPT_BYTES, DEFAULT_MAX_TOOL_OUTPUT_BYTES, LLMConfig
+from khorek.config import DEFAULT_MAX_PROMPT_BYTES, LLMConfig
 from khorek.trace import TraceRecorder
 
 AgentErrorCode = Literal[
@@ -36,7 +36,7 @@ AgentErrorCode = Literal[
     "no_tool_call",
 ]
 
-ToolHandler = Callable[[dict[str, Any]], Any]
+ToolHandler = Callable[[dict[str, Any]], dict[str, Any]]
 
 
 class ModelUnavailable(Exception):
@@ -94,12 +94,10 @@ class LLMClient:
         *,
         transport: httpx.BaseTransport | None = None,
         max_prompt_bytes: int = DEFAULT_MAX_PROMPT_BYTES,
-        max_tool_output_bytes: int = DEFAULT_MAX_TOOL_OUTPUT_BYTES,
         tracer: TraceRecorder | None = None,
     ) -> None:
         self.config = config
         self.max_prompt_bytes = max_prompt_bytes
-        self.max_tool_output_bytes = max_tool_output_bytes
         self.tracer = tracer
         self._base_url = config.base_url.rstrip("/")
         self._client = httpx.Client(transport=transport)
@@ -356,8 +354,14 @@ class LLMClient:
                         )
                         raise AgentError("schema", f"tool {call.name} failed: {exc}") from exc
 
+                    if not isinstance(result, dict):
+                        raise AgentError(
+                            "schema",
+                            f"tool {call.name} returned {type(result).__name__}; "
+                            "every tool handler must return a dict",
+                        )
                     try:
-                        content = _truncate_json(result, self.max_tool_output_bytes)
+                        content = json.dumps(result, ensure_ascii=False)
                     except (TypeError, ValueError) as exc:
                         raise AgentError(
                             "schema", f"tool {call.name} returned non-JSON data: {exc}"
@@ -699,53 +703,6 @@ def _format_validation(exc: ValidationError) -> str:
         location = ".".join(str(part) for part in error["loc"])
         details.append(f"{location}: {error['msg']}" if location else error["msg"])
     return "; ".join(details)
-
-
-# -- tool result truncation -------------------------------------------
-
-
-def _truncate_json(value: Any, max_bytes: int) -> str:
-    """Serialize a tool result, truncating with a ``truncated`` marker."""
-    try:
-        serialized = json.dumps(value, ensure_ascii=False)
-    except (TypeError, ValueError) as exc:
-        raise TypeError(f"not JSON serializable: {exc}") from exc
-    if len(serialized.encode("utf-8")) <= max_bytes:
-        return serialized
-
-    if isinstance(value, dict) and isinstance(value.get("content"), str):
-        payload = {key: item for key, item in value.items() if key not in {"content", "truncated"}}
-        payload["truncated"] = True
-        return _fit_text(payload, "content", value["content"], max_bytes)
-
-    wrapper: dict[str, Any] = {
-        "truncated": True,
-        "original_bytes": len(serialized.encode("utf-8")),
-        "preview": serialized,
-    }
-    fitted = _fit_text(wrapper, "preview", serialized, max_bytes)
-    if len(fitted.encode("utf-8")) > max_bytes:
-        minimal = json.dumps({"truncated": True})
-        if len(minimal.encode("utf-8")) <= max_bytes:
-            return minimal
-    return fitted
-
-
-def _fit_text(payload: dict[str, Any], key: str, text: str, max_bytes: int) -> str:
-    low = 0
-    high = len(text)
-    best = ""
-    while low <= high:
-        middle = (low + high) // 2
-        payload[key] = text[:middle]
-        serialized = json.dumps(payload, ensure_ascii=False)
-        if len(serialized.encode("utf-8")) <= max_bytes:
-            best = payload[key]
-            low = middle + 1
-        else:
-            high = middle - 1
-    payload[key] = best
-    return json.dumps(payload, ensure_ascii=False)
 
 
 __all__ = [

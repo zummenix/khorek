@@ -18,7 +18,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
-from khorek.agents.tools import read_file_tool
+from khorek.agents.tools import fit_result, read_file_tool
 from khorek.config import DefaultsConfig, FixerAgentConfig
 from khorek.content import format_file_lines
 from khorek.db import Issue
@@ -71,7 +71,7 @@ def _resolve_existing(root: Path, raw: str) -> tuple[Path, str]:
     return resolved, resolved.relative_to(root_real).as_posix()
 
 
-def edit_file_tool(root: Path, snapshotter: Snapshotter) -> Tool:
+def edit_file_tool(root: Path, snapshotter: Snapshotter, max_tool_output_bytes: int) -> Tool:
     """Create the exact-match ``edit_file`` tool."""
 
     def handler(arguments: dict[str, Any]) -> dict[str, object]:
@@ -106,11 +106,16 @@ def edit_file_tool(root: Path, snapshotter: Snapshotter) -> Tool:
             resolved.write_bytes(updated.encode("utf-8"))
         except OSError as exc:
             raise ToolValidationError(f"cannot write {relative}: {exc}") from exc
-        return {
-            "path": relative,
-            "replacements": 1,
-            "line_count": max(1, len(updated.splitlines())),
-        }
+        return fit_result(
+            {
+                "path": relative,
+                "replacements": 1,
+                "line_count": max(1, len(updated.splitlines())),
+                "truncated": False,
+            },
+            [{"path": relative, "truncated": True}, {"truncated": True}],
+            max_tool_output_bytes,
+        )
 
     return Tool(
         name="edit_file",
@@ -143,7 +148,7 @@ def edit_file_tool(root: Path, snapshotter: Snapshotter) -> Tool:
     )
 
 
-def write_file_tool(root: Path, snapshotter: Snapshotter) -> Tool:
+def write_file_tool(root: Path, snapshotter: Snapshotter, max_tool_output_bytes: int) -> Tool:
     """Create the ``write_file`` tool (overwrites or creates a UTF-8 file)."""
 
     def handler(arguments: dict[str, Any]) -> dict[str, object]:
@@ -164,11 +169,17 @@ def write_file_tool(root: Path, snapshotter: Snapshotter) -> Tool:
         except OSError as exc:
             raise ToolValidationError(f"cannot write {raw}: {exc}") from exc
         root_real = Path(os.path.realpath(root))
-        return {
-            "path": target.relative_to(root_real).as_posix(),
-            "bytes_written": len(encoded),
-            "created": created,
-        }
+        path = target.relative_to(root_real).as_posix()
+        return fit_result(
+            {
+                "path": path,
+                "bytes_written": len(encoded),
+                "created": created,
+                "truncated": False,
+            },
+            [{"path": path, "truncated": True}, {"truncated": True}],
+            max_tool_output_bytes,
+        )
 
     return Tool(
         name="write_file",
@@ -276,9 +287,9 @@ class FixerAgent:
         self._snapshotter = snapshotter
         self._system_prompt = default_prompt("fixer")
         self._tools = [
-            read_file_tool(project_root, defaults.max_file_bytes),
-            edit_file_tool(project_root, snapshotter),
-            write_file_tool(project_root, snapshotter),
+            read_file_tool(project_root, defaults.max_file_bytes, defaults.max_tool_output_bytes),
+            edit_file_tool(project_root, snapshotter, defaults.max_tool_output_bytes),
+            write_file_tool(project_root, snapshotter, defaults.max_tool_output_bytes),
             report_fix_result_tool(),
         ]
 

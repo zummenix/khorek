@@ -1,10 +1,24 @@
-"""Read-only file tools shared by the Aspect and Explorer agents."""
+"""Read-only file tools shared by the Aspect and Explorer agents.
+
+Every tool returns a dict and bounds its own serialized result to the
+configured ``max_tool_output_bytes``: the loop no longer truncates centrally.
+
+The budget covers the whole result, fixed metadata included.  When a budget is
+set below the size of a result's fixed metadata (its "envelope": the path, line
+numbers, and wrapper keys), no layout can honor it; the tool then returns the
+smallest valid result — empty payload, ``truncated: true`` — and the envelope
+is the floor.  The envelope is small for sane budgets; only a deliberately tiny
+``max_tool_output_bytes`` (or a very long project-relative path echoed by
+``read_file``) can reach it.
+"""
 
 from __future__ import annotations
 
 import fnmatch
+import json
 import os
 import re
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -14,8 +28,33 @@ from khorek.content import format_file_lines
 from khorek.files import PathEscapeError, is_binary, read_text_file, resolve_within_root, walk_files
 from khorek.llm import Tool, ToolValidationError
 
-MAX_GREP_MATCHES = 200
+MAX_GREP_MATCHES = 100
 MAX_LISTED_FILES = 2000
+MAX_FILE_LINES = 1000
+
+
+def serialized_size(value: Any) -> int:
+    """UTF-8 size of *value* exactly as the agent loop serializes tool results."""
+    return len(json.dumps(value, ensure_ascii=False).encode("utf-8"))
+
+
+def fit_result(
+    result: dict[str, Any],
+    fallbacks: Sequence[dict[str, Any]],
+    max_bytes: int,
+) -> dict[str, Any]:
+    """Return the first of *result* and *fallbacks* whose serialized size fits.
+
+    *result* is the full result; *fallbacks* are progressively smaller valid
+    shapes of the same result, the last one being the floor.  Use this for
+    tools whose only variable cost is the path: they cannot shrink a payload,
+    so they drop optional fields instead.  The cap covers the whole JSON
+    result, metadata included.
+    """
+    for candidate in (result, *fallbacks):
+        if serialized_size(candidate) <= max_bytes:
+            return candidate
+    return fallbacks[-1]
 
 
 def _string_argument(arguments: dict[str, Any], name: str, *, default: str | None = None) -> str:
@@ -57,11 +96,79 @@ def _resolve_file(root: Path, root_real: Path, raw: str) -> tuple[Path, str]:
     return resolved, relative
 
 
-def read_file_tool(root: Path, max_file_bytes: int) -> Tool:
-    """Create the ``read_file`` tool."""
+def _read_file_result(
+    relative: str,
+    total: int,
+    start: int,
+    end: int,
+    content: str,
+    truncated: bool,
+) -> dict[str, Any]:
+    """Assemble the ``read_file`` result dict for one line window."""
+    return {
+        "path": relative,
+        "line_start": start,
+        "line_end": end,
+        "total_lines": total,
+        "truncated": truncated,
+        "remaining": max(0, total - end),
+        "content": content,
+    }
+
+
+def _fit_read_file_result(
+    relative: str,
+    lines: list[str],
+    text: str,
+    start: int,
+    requested: int,
+    total: int,
+    max_bytes: int,
+) -> dict[str, Any]:
+    """The widest line window from *start* whose serialized result fits *max_bytes*.
+
+    The cap applies to the whole JSON result the loop sends, not just the
+    ``content`` string: metadata and JSON escaping count too.
+    """
+    low, high, best = 1, requested, None
+    while low <= high:
+        middle = (low + high) // 2
+        end = start + middle - 1
+        content = format_file_lines(relative, text, offset=start, limit=middle, header=False)
+        candidate = _read_file_result(relative, total, start, end, content, end < total)
+        if serialized_size(candidate) <= max_bytes:
+            best = candidate
+            low = middle + 1
+        else:
+            high = middle - 1
+    if best is not None:
+        return best
+
+    # A single numbered line is already over the cap: show as much of it as
+    # fits.  No tool can read further into a line, so the tail is truncated.
+    line = lines[start - 1]
+    prefix = f"{start:>{len(str(start))}} | "
+    best = _read_file_result(relative, total, start, start, "", True)
+    if serialized_size(best) > max_bytes:
+        return best  # fixed metadata alone exceeds the cap; nothing more to drop
+    low, high = 0, len(line)
+    while low <= high:
+        middle = (low + high) // 2
+        content = prefix + line[:middle]
+        candidate = _read_file_result(relative, total, start, start, content, True)
+        if serialized_size(candidate) <= max_bytes:
+            best = candidate
+            low = middle + 1
+        else:
+            high = middle - 1
+    return best
+
+
+def read_file_tool(root: Path, max_file_bytes: int, max_tool_output_bytes: int) -> Tool:
+    """Create the self-truncating ``read_file`` tool."""
     root_real = Path(os.path.realpath(root))
 
-    def handler(arguments: dict[str, Any]) -> str:
+    def handler(arguments: dict[str, Any]) -> dict[str, Any]:
         raw = _string_argument(arguments, "path")
         offset = _optional_int_argument(arguments, "offset")
         limit = _optional_int_argument(arguments, "limit")
@@ -71,16 +178,22 @@ def read_file_tool(root: Path, max_file_bytes: int) -> Tool:
                 raise ToolValidationError(
                     f"file is larger than max_file_bytes={max_file_bytes}: {relative}"
                 )
-            content = format_file_lines(
-                relative, read_text_file(resolved), offset=offset, limit=limit
-            )
+            text = read_text_file(resolved)
         except OSError as exc:
             raise ToolValidationError(f"cannot read {relative}: {exc}") from exc
-        except (TypeError, ValueError) as exc:
-            raise ToolValidationError(
-                f"invalid offset={offset!r} or limit={limit!r}: {exc}"
-            ) from exc
-        return content
+
+        lines = text.splitlines() or [""]
+        total = len(lines)
+        start = 1 if offset is None or offset <= 0 else offset
+        start = min(start, total)
+        requested = total - start + 1
+        if limit is not None and limit > 0:
+            requested = min(requested, limit)
+        requested = min(requested, MAX_FILE_LINES)
+
+        return _fit_read_file_result(
+            relative, lines, text, start, requested, total, max_tool_output_bytes
+        )
 
     return Tool(
         name="read_file",
@@ -88,8 +201,9 @@ def read_file_tool(root: Path, max_file_bytes: int) -> Tool:
             "Read a UTF-8 text file from the project. The path must be relative to "
             "the project root. Reads lines *offset* through *offset+limit-1* "
             "(1-based); both are optional and default to the whole file. The "
-            "result includes the line range, the number of lines shown, and how "
-            "many lines remain unread."
+            "result includes the line range, the number of lines shown, how many "
+            "lines remain unread, and the numbered lines themselves; when "
+            "truncated is true, use a later offset to keep reading."
         ),
         parameters={
             "type": "object",
@@ -140,7 +254,58 @@ def _iter_grep_candidates(
     return candidates
 
 
-def grep_tool(root: Path, max_file_bytes: int) -> Tool:
+def _grep_result(matches: list[dict[str, Any]], truncated: bool) -> dict[str, Any]:
+    return {"matches": matches, "truncated": truncated}
+
+
+def _truncated_grep_match(
+    match: dict[str, Any], kept: list[dict[str, Any]], max_bytes: int
+) -> dict[str, Any] | None:
+    """The boundary match with its text cut to fit, or ``None`` if it cannot."""
+    base = {"path": match["path"], "line": match["line"]}
+    text = match["text"]
+    best: dict[str, Any] | None = None
+    low, high = 0, len(text)
+    while low <= high:
+        middle = (low + high) // 2
+        candidate = {**base, "text": text[:middle]}
+        if serialized_size(_grep_result([*kept, candidate], True)) <= max_bytes:
+            best = candidate
+            low = middle + 1
+        else:
+            high = middle - 1
+    return best
+
+
+def _fit_grep_result(
+    matches: list[dict[str, Any]], count_truncated: bool, max_bytes: int
+) -> dict[str, Any]:
+    """Trim *matches* until the serialized result fits *max_bytes*.
+
+    Whole matches are kept first; if the next match's line alone does not fit,
+    its ``text`` is cut short instead.  The cap applies to the whole JSON
+    result the loop sends, metadata and JSON escaping included.
+    """
+    if serialized_size(_grep_result(matches, count_truncated)) <= max_bytes:
+        return _grep_result(matches, count_truncated)
+
+    low, high, best = 0, len(matches), 0
+    while low <= high:
+        middle = (low + high) // 2
+        if serialized_size(_grep_result(matches[:middle], True)) <= max_bytes:
+            best = middle
+            low = middle + 1
+        else:
+            high = middle - 1
+
+    if best < len(matches):
+        boundary = _truncated_grep_match(matches[best], matches[:best], max_bytes)
+        if boundary is not None:
+            return _grep_result([*matches[:best], boundary], True)
+    return _grep_result(matches[:best], True)
+
+
+def grep_tool(root: Path, max_file_bytes: int, max_tool_output_bytes: int) -> Tool:
     """Create the ``grep`` tool (Python regular expressions, 1-based lines)."""
     root_real = Path(os.path.realpath(root))
 
@@ -148,6 +313,10 @@ def grep_tool(root: Path, max_file_bytes: int) -> Tool:
         pattern = _string_argument(arguments, "pattern")
         target = _string_argument(arguments, "path", default=".")
         glob = _optional_string_argument(arguments, "glob")
+        requested = _optional_int_argument(arguments, "limit")
+        match_limit = MAX_GREP_MATCHES
+        if requested is not None and requested > 0:
+            match_limit = min(requested, MAX_GREP_MATCHES)
         try:
             regex = re.compile(pattern)
         except re.error as exc:
@@ -165,20 +334,23 @@ def grep_tool(root: Path, max_file_bytes: int) -> Tool:
                 continue
             for line_number, line in enumerate(content.splitlines(), 1):
                 if regex.search(line):
-                    if len(matches) >= MAX_GREP_MATCHES:
+                    if len(matches) >= match_limit:
                         truncated = True
                         break
                     matches.append({"path": relative, "line": line_number, "text": line})
             if truncated:
                 break
-        return {"matches": matches, "truncated": truncated}
+        return _fit_grep_result(matches, truncated, max_tool_output_bytes)
 
     return Tool(
         name="grep",
         description=(
             "Search project text files with a Python regular expression. Returns "
             "matches with 1-based line numbers. Optionally restrict to a path and a "
-            "glob (gitignore-style, e.g. '*.py')."
+            "glob (gitignore-style, e.g. '*.py'). At most *limit* matches are "
+            f"returned (default and hard cap {MAX_GREP_MATCHES}); long match lines "
+            "and matches beyond the harness output budget are dropped or cut "
+            "short, and truncated is set."
         ),
         parameters={
             "type": "object",
@@ -195,6 +367,12 @@ def grep_tool(root: Path, max_file_bytes: int) -> Tool:
                     "type": "string",
                     "description": "Optional gitignore-style glob filter, e.g. '*.py'.",
                 },
+                "limit": {
+                    "type": "integer",
+                    "description": (
+                        f"Maximum matches to return (default and hard cap {MAX_GREP_MATCHES})."
+                    ),
+                },
             },
             "required": ["pattern"],
             "additionalProperties": False,
@@ -203,8 +381,35 @@ def grep_tool(root: Path, max_file_bytes: int) -> Tool:
     )
 
 
-def list_files_tool(root: Path) -> Tool:
-    """Create the ``list_files`` tool."""
+def _list_files_result(files: list[str], truncated: bool) -> dict[str, Any]:
+    return {"files": files, "count": len(files), "truncated": truncated}
+
+
+def _fit_list_files_result(
+    files: list[str], count_truncated: bool, max_bytes: int
+) -> dict[str, Any]:
+    """Keep as many whole paths as fit *max_bytes*; drop the rest from the tail.
+
+    A path is never cut short: a partial path is misleading, so a boundary
+    path that does not fit is dropped instead.  The cap applies to the whole
+    JSON result, metadata included.
+    """
+    if serialized_size(_list_files_result(files, count_truncated)) <= max_bytes:
+        return _list_files_result(files, count_truncated)
+
+    low, high, best = 0, len(files), 0
+    while low <= high:
+        middle = (low + high) // 2
+        if serialized_size(_list_files_result(files[:middle], True)) <= max_bytes:
+            best = middle
+            low = middle + 1
+        else:
+            high = middle - 1
+    return _list_files_result(files[:best], True)
+
+
+def list_files_tool(root: Path, max_tool_output_bytes: int) -> Tool:
+    """Create the self-truncating ``list_files`` tool."""
 
     def handler(arguments: dict[str, Any]) -> dict[str, Any]:
         target = _string_argument(arguments, "path", default=".")
@@ -217,13 +422,15 @@ def list_files_tool(root: Path) -> Tool:
                 files = [path for path in files if path.as_posix() == pattern]
         truncated = len(files) > MAX_LISTED_FILES
         listed = [path.as_posix() for path in files[:MAX_LISTED_FILES]]
-        return {"files": listed, "count": len(listed), "truncated": truncated}
+        return _fit_list_files_result(listed, truncated, max_tool_output_bytes)
 
     return Tool(
         name="list_files",
         description=(
             "List project files under a path, relative to the project root, sorted. "
-            "Optionally filter with a shell-style pattern (e.g. '*.py')."
+            "Optionally filter with a shell-style pattern (e.g. '*.py'). The "
+            "list is capped by the harness output budget; truncated is set when "
+            "files were dropped."
         ),
         parameters={
             "type": "object",
@@ -244,20 +451,23 @@ def list_files_tool(root: Path) -> Tool:
     )
 
 
-def read_only_tools(root: Path, max_file_bytes: int) -> list[Tool]:
+def read_only_tools(root: Path, max_file_bytes: int, max_tool_output_bytes: int) -> list[Tool]:
     """The shared read-only tool set used by both agents."""
     return [
-        read_file_tool(root, max_file_bytes),
-        grep_tool(root, max_file_bytes),
-        list_files_tool(root),
+        read_file_tool(root, max_file_bytes, max_tool_output_bytes),
+        grep_tool(root, max_file_bytes, max_tool_output_bytes),
+        list_files_tool(root, max_tool_output_bytes),
     ]
 
 
 __all__ = [
+    "MAX_FILE_LINES",
     "MAX_GREP_MATCHES",
     "MAX_LISTED_FILES",
+    "fit_result",
     "grep_tool",
     "list_files_tool",
     "read_file_tool",
     "read_only_tools",
+    "serialized_size",
 ]

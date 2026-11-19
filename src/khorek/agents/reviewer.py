@@ -94,7 +94,7 @@ class ReviewerAgent:
         self._config = config
         self._system_prompt = default_prompt("reviewer")
         self._tools = [
-            *read_only_tools(project_root, defaults.max_file_bytes),
+            *read_only_tools(project_root, defaults.max_file_bytes, defaults.max_tool_output_bytes),
             report_review_tool(),
         ]
 

@@ -32,13 +32,11 @@ def _client(
     fake: FakeModel,
     *,
     max_prompt_bytes: int = 400_000,
-    max_tool_output_bytes: int = 16_000,
 ) -> LLMClient:
     return LLMClient(
         _config(),
         transport=fake.transport,
         max_prompt_bytes=max_prompt_bytes,
-        max_tool_output_bytes=max_tool_output_bytes,
     )
 
 
@@ -236,36 +234,30 @@ def test_handler_validation_error_gets_one_repair() -> None:
     assert "text must be a string" in fake.tool_results()[0]
 
 
-def test_tool_output_is_truncated_with_marker() -> None:
-    def big(_arguments: dict[str, Any]) -> dict[str, Any]:
-        return {"content": "x" * 5000}
+def test_non_dict_tool_result_is_a_schema_error() -> None:
+    def raw(_arguments: dict[str, Any]) -> Any:
+        return "plain text"
 
-    big_tool = Tool(
-        name="big",
-        description="Big.",
+    raw_tool = Tool(
+        name="raw",
+        description="Raw.",
         parameters={"type": "object", "properties": {}, "required": []},
-        handler=big,
+        handler=raw,
     )
-    fake = FakeModel(
-        [
-            tool_message("big", {}),
-            text_message("finished"),
-        ]
-    )
-    client = _client(fake, max_tool_output_bytes=100)
-    result = client.run_agent(
-        system_prompt="system",
-        user_prompt="user",
-        tools=[big_tool],
-        max_tool_calls=5,
-        force_tool_call=False,
-        text_is_final=True,
-    )
-    assert result.text == "finished"
-    raw_result = fake.tool_results()[0]
-    assert len(raw_result.encode("utf-8")) <= 100
-    payload = json.loads(raw_result)
-    assert payload["truncated"] is True
+    fake = FakeModel([tool_message("raw", {})])
+    with pytest.raises(AgentError) as exc_info:
+        _client(fake).run_agent(
+            system_prompt="system",
+            user_prompt="user",
+            tools=[raw_tool],
+            max_tool_calls=5,
+            force_tool_call=False,
+            text_is_final=True,
+        )
+    assert exc_info.value.code == "schema"
+    assert "must return a dict" in str(exc_info.value)
+    assert "str" in str(exc_info.value)
+    assert fake.chat_calls == 1
 
 
 def test_text_final_agent_can_answer_without_tools() -> None:
