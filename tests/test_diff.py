@@ -58,7 +58,7 @@ def test_format_changes_concatenates_changed_files(tmp_path: Path) -> None:
     assert "+alpha = 2" in diff
     assert "b/src/c.py" in diff
     assert "+gamma = 1" in diff
-    assert "src/b.py" not in diff  # an unchanged captured file is omitted
+    assert "src/b.py" not in diff
 
 
 def test_format_changes_is_empty_when_nothing_changed(tmp_path: Path) -> None:
