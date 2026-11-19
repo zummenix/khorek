@@ -46,17 +46,27 @@ maps "any issue remains open" to exit code 1.
 
 from __future__ import annotations
 
+from collections.abc import Collection
+
 from khorek.context import AppContext
 from khorek.report import CombinedStats
 from khorek.workflows.explore import run_explore
 from khorek.workflows.fix import run_fix
 
 
-def run_explore_and_fix(app: AppContext, limit: int = 0, *, pruned: int = 0) -> CombinedStats:
+def run_explore_and_fix(
+    app: AppContext,
+    limit: int = 0,
+    *,
+    pruned: int = 0,
+    aspect_ids: Collection[str] | None = None,
+) -> CombinedStats:
     """Run the combined workflow and return its unified counters.
 
     ``pruned`` is the drift-prune count from the run preamble (reported in the
-    unified summary); the workflow itself never prunes.
+    unified summary); the workflow itself never prunes.  ``aspect_ids``
+    restricts both the drained fix queue and the explore enumeration (the
+    remaining count is filtered the same way).
     """
     attempted_ids: set[int] = set()
     attempted = 0
@@ -76,6 +86,7 @@ def run_explore_and_fix(app: AppContext, limit: int = 0, *, pruned: int = 0) -> 
             exclude_ids=attempted_ids,
             attempted_ids=attempted_ids,
             summarize=False,
+            aspect_ids=aspect_ids,
         )
         attempted += fix_stats.attempted
         stats.fixed += fix_stats.fixed
@@ -92,7 +103,7 @@ def run_explore_and_fix(app: AppContext, limit: int = 0, *, pruned: int = 0) -> 
         remaining_created = 0 if limit <= 0 else limit - created
         if limit > 0 and remaining_created <= 0:
             break
-        explore_stats = run_explore(app, limit=remaining_created)
+        explore_stats = run_explore(app, limit=remaining_created, aspect_ids=aspect_ids)
         created += explore_stats.issues_created
         if explore_stats.issues_created == 0:
             break
@@ -107,7 +118,7 @@ def run_explore_and_fix(app: AppContext, limit: int = 0, *, pruned: int = 0) -> 
 
     stats.created = created
     stats.cycles = cycles
-    stats.remaining = app.database.count_issues()
+    stats.remaining = app.database.count_issues(aspect_ids=aspect_ids)
     app.reporter.combined_summary(stats)
     return stats
 

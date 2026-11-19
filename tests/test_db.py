@@ -346,6 +346,40 @@ def test_list_issues_severity_and_aspect_filters(tmp_path: Path) -> None:
         assert db.count_issues(aspect_ids=["nope"]) == 0
 
 
+def test_list_issues_issue_ids_filter(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    with Database(tmp_path / "khorek.db", project) as db:
+        ids = _seed_filter_fixtures(db)
+
+        # OR within the flag.
+        assert set(_ids(db.list_issues(issue_ids=[ids["a"], ids["c"]]))) == {
+            ids["a"],
+            ids["c"],
+        }
+        # Duplicates and unsorted values collapse to the same set.
+        assert _ids(db.list_issues(issue_ids=[ids["b"], ids["b"], ids["a"]])) == [
+            ids["a"],
+            ids["b"],
+        ]
+
+        # AND across flags.
+        assert _ids(db.list_issues(issue_ids=[ids["a"], ids["c"]], aspect_ids=["dead-code"])) == [
+            ids["c"]
+        ]
+        assert _ids(db.list_issues(issue_ids=[ids["a"]], severities=["high"])) == [ids["a"]]
+        assert _ids(db.list_issues(issue_ids=[ids["a"]], path_prefixes=["src/other.py"])) == []
+
+        # count_issues mirrors the filters.
+        assert db.count_issues(issue_ids=[ids["a"], ids["c"]]) == 2
+        assert db.count_issues(issue_ids=[ids["a"], ids["c"]], aspect_ids=["dead-code"]) == 1
+
+        # An empty filter is no constraint; an unknown id matches nothing.
+        assert db.count_issues(issue_ids=[]) == len(ids)
+        assert db.list_issues(issue_ids=[999999]) == []
+        assert db.count_issues(issue_ids=[999999]) == 0
+
+
 def test_list_issues_path_prefix_filters(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()

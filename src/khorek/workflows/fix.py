@@ -53,16 +53,24 @@ def build_queue(
     database: Database,
     *,
     exclude_ids: Collection[int] = (),
+    aspect_ids: Collection[str] | None = None,
+    issue_ids: Collection[int] | None = None,
 ) -> list[Issue]:
     """Return open issues in fix order (computed once per run).
 
     ``exclude_ids`` is used by the combined explore-and-fix workflow: issues
     already attempted in this run must never be dequeued a second time, even
-    though they stay open after a failure.
+    though they stay open after a failure.  ``aspect_ids``/``issue_ids``
+    restrict the queue to the matching issues (OR within a filter, AND across
+    the two); an empty or ``None`` filter is no constraint.
     """
     excluded = set(exclude_ids)
     return sorted(
-        (issue for issue in database.list_issues() if issue.id not in excluded),
+        (
+            issue
+            for issue in database.list_issues(aspect_ids=aspect_ids, issue_ids=issue_ids)
+            if issue.id not in excluded
+        ),
         key=lambda issue: (
             issue.retry_count,
             _SEVERITY_RANK.get(issue.severity, _UNKNOWN_SEVERITY_RANK),
@@ -129,10 +137,19 @@ class _FixWorkflow:
         *,
         exclude_ids: Collection[int] = (),
         attempted_ids: set[int] | None = None,
+        aspect_ids: Collection[str] | None = None,
+        issue_ids: Collection[int] | None = None,
     ) -> None:
         self.app = app
         self.limit = limit
-        self.queue = build_queue(app.database, exclude_ids=exclude_ids)
+        self.aspect_ids = aspect_ids or None
+        self.issue_ids = issue_ids or None
+        self.queue = build_queue(
+            app.database,
+            exclude_ids=exclude_ids,
+            aspect_ids=self.aspect_ids,
+            issue_ids=self.issue_ids,
+        )
         self.attempted_ids = attempted_ids if attempted_ids is not None else set()
         # Current sha256 per path, hashed at most once per run.  A fixed or
         # restored file invalidates its entry so a later same-path issue sees
@@ -702,19 +719,25 @@ def run_fix(
     exclude_ids: Collection[int] = (),
     attempted_ids: set[int] | None = None,
     summarize: bool = True,
+    aspect_ids: Collection[str] | None = None,
+    issue_ids: Collection[int] | None = None,
 ) -> FixStats:
     """Run the fix workflow and return its counters.
 
     ``exclude_ids`` / ``attempted_ids`` let the combined workflow keep a
     per-run "already attempted" set across multiple drain calls.
-    ``summarize=False`` suppresses the per-call fix summary so the combined
-    workflow can print one unified end-of-run line instead.
+    ``aspect_ids``/``issue_ids`` restrict the queue and the reported
+    ``remaining`` count to the matching issues.  ``summarize=False`` suppresses
+    the per-call fix summary so the combined workflow can print one unified
+    end-of-run line instead.
     """
     workflow = _FixWorkflow(
         app,
         limit,
         exclude_ids=exclude_ids,
         attempted_ids=attempted_ids,
+        aspect_ids=aspect_ids,
+        issue_ids=issue_ids,
     )
     compiled = workflow.build_graph().compile()
     final = cast(
@@ -723,7 +746,8 @@ def run_fix(
     )
     stats = cast(FixStats, final["stats"])
     if summarize:
-        app.reporter.fix_summary(stats, remaining=app.database.count_issues())
+        remaining = app.database.count_issues(aspect_ids=aspect_ids, issue_ids=issue_ids)
+        app.reporter.fix_summary(stats, remaining=remaining)
     return stats
 
 
