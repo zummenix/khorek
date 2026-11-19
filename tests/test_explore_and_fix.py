@@ -105,6 +105,48 @@ def test_queue_is_drained_before_exploring(tmp_path: Path, capsys) -> None:
     assert "explore-and-fix summary:" in output
 
 
+def test_aspect_filter_restricts_both_drain_and_explore(tmp_path: Path, capsys) -> None:
+    project = make_project(
+        tmp_path / "project",
+        files={"src/a.py": "value = 1\n", "src/b.py": "b = 1\n"},
+        aspects=[
+            {
+                "id": "comments",
+                "prompt": "Find comments that are inconsistent with the code.",
+                "files": ["src/"],
+            },
+            {"id": "style", "prompt": "Find style issues.", "files": ["src/"]},
+        ],
+        verify=TRUE_VERIFY,
+    )
+    seed_state(project, outcome="issues", path="src/a.py")
+    comments_id = seed_issue(project, aspect_id="comments", path="src/a.py")
+    style_id = seed_issue(project, aspect_id="style", path="src/b.py", description="style issue")
+    fake = FakeModel(
+        [
+            edit("value = 1", "value = 2"),
+            fix_report("fixed it"),
+            review(True, "good"),
+            report(),
+        ]
+    )
+
+    assert run_cli(fake, *explore_and_fix_args(project, "--aspect", "comments")) == 0
+
+    # One fix block for the comments issue, then one explore call for the
+    # remaining comments pair: the style aspect is neither drained nor explored.
+    assert fake.chat_calls == 4
+    output = capsys.readouterr().out
+    assert f"fix #{comments_id}" in output
+    assert "explore comments src/b.py" in output
+    assert "explore style" not in output
+    assert "0 remaining" in output
+    with Database(project.db_path, project.root) as database:
+        remaining = {issue.id for issue in database.list_issues()}
+    assert comments_id not in remaining
+    assert style_id in remaining
+
+
 def test_fix_block_streams_and_unified_summary_stays_last(tmp_path: Path, capsys) -> None:
     project = make_project(
         tmp_path / "project",

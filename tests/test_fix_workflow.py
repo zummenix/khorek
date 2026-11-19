@@ -731,6 +731,43 @@ def test_queue_order_is_retry_count_then_severity_then_created_at(tmp_path: Path
         ]
 
 
+def test_queue_filters_by_aspect_and_issue_id(tmp_path: Path) -> None:
+    project = make_project(tmp_path / "project", files={"src/a.py": "x = 1\n"})
+    comments_high = seed_issue(project, description="comments high", aspect_id="comments")
+    style_low = seed_issue(project, description="style low", aspect_id="style", severity="low")
+    comments_low = seed_issue(
+        project, description="comments low", aspect_id="comments", severity="low"
+    )
+
+    with Database(project.db_path, project.root) as database:
+        # A single filter restricts the queue; OR within the flag.
+        assert [issue.id for issue in build_queue(database, aspect_ids=["style"])] == [style_low]
+        assert [
+            issue.id for issue in build_queue(database, issue_ids=[comments_high, style_low])
+        ] == [comments_high, style_low]
+
+        # The two flags AND together.
+        assert [
+            issue.id
+            for issue in build_queue(
+                database, aspect_ids=["comments"], issue_ids=[comments_high, style_low]
+            )
+        ] == [comments_high]
+
+        # Empty/None filters are no constraint; exclude_ids still applies.
+        assert [issue.id for issue in build_queue(database, aspect_ids=["comments"])] == [
+            comments_high,
+            comments_low,
+        ]
+        assert [issue.id for issue in build_queue(database, exclude_ids=[comments_high])] == [
+            style_low,
+            comments_low,
+        ]
+
+        # An unknown id matches nothing.
+        assert build_queue(database, issue_ids=[999999]) == []
+
+
 def test_verifier_failure_falls_back_to_raw_failure_output(tmp_path: Path, capsys) -> None:
     project = make_project(
         tmp_path / "project",

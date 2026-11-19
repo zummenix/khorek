@@ -58,6 +58,13 @@ def _add_workflow_arguments(parser: argparse.ArgumentParser) -> None:
         help="maximum number of issues to process (0 = unlimited)",
     )
     parser.add_argument(
+        "--aspect",
+        dest="aspects",
+        action="append",
+        metavar="ID",
+        help="only this aspect id (repeatable, OR between values)",
+    )
+    parser.add_argument(
         "--config",
         default=None,
         help="path to khorek.toml (default: <project>/khorek.toml)",
@@ -101,6 +108,14 @@ def build_parser() -> argparse.ArgumentParser:
         description="Fix open issues one at a time, verifying each fix.",
     )
     _add_workflow_arguments(fix)
+    fix.add_argument(
+        "--issue-id",
+        dest="issue_ids",
+        action="append",
+        type=int,
+        metavar="ID",
+        help="only this issue id (repeatable, OR between values)",
+    )
 
     explore_and_fix = subparsers.add_parser(
         "explore-and-fix",
@@ -370,11 +385,11 @@ def _run_workflow(
 ) -> int:
     """Shared preamble/teardown for every workflow command.
 
-    Resolve the project, load and validate config, optionally require a
-    ``[[verify]]`` command, take the lock, open and validate the DB, prune
-    config drift, run *body*, then release everything.  The model probe and the
-    trace recorder are set up before the lock so a fatal run still leaves a
-    record of why it failed.
+    Resolve the project, load and validate config, validate the requested
+    ``--aspect`` values, optionally require a ``[[verify]]`` command, take the
+    lock, open and validate the DB, prune config drift, run *body*, then
+    release everything.  The model probe and the trace recorder are set up
+    before the lock so a fatal run still leaves a record of why it failed.
     """
     project_root = _resolve_project(args.path)
     if project_root is None:
@@ -389,6 +404,18 @@ def _run_workflow(
             file=sys.stderr,
         )
         return EXIT_FATAL
+
+    requested_aspects = getattr(args, "aspects", None) or []
+    if requested_aspects:
+        known = {aspect.id for aspect in config.aspects}
+        for aspect_id in requested_aspects:
+            if aspect_id not in known:
+                known_list = ", ".join(aspect.id for aspect in config.aspects)
+                print(
+                    f"khorek: unknown aspect: {aspect_id} (known: {known_list})",
+                    file=sys.stderr,
+                )
+                return EXIT_FATAL
 
     db_path = _resolve_db_path(project_root, args.db)
     trace_enabled = getattr(args, "trace", None)
@@ -498,13 +525,22 @@ def _run_workflow(
             )
 
 
+def _filter_label(aspect_ids: Sequence[str] | None, issue_ids: Sequence[int] | None) -> str:
+    """Render the active ``--aspect``/``--issue-id`` filters for a message."""
+    parts = [f"--aspect {aspect_id}" for aspect_id in aspect_ids or []]
+    parts.extend(f"--issue-id {issue_id}" for issue_id in issue_ids or [])
+    return " ".join(parts)
+
+
 def _run_explore(args: argparse.Namespace, transport: httpx.BaseTransport | None) -> int:
+    aspect_ids = getattr(args, "aspects", None) or None
+
     def body(app: AppContext, limit: int, pruned: int) -> int:
-        stats = run_explore(app, limit=limit)
+        stats = run_explore(app, limit=limit, aspect_ids=aspect_ids)
         app.reporter.summary(
             stats,
             pruned=pruned,
-            open_issues=app.database.count_issues(),
+            open_issues=app.database.count_issues(aspect_ids=aspect_ids),
         )
         return EXIT_ERROR if stats.errored else EXIT_OK
 
@@ -518,13 +554,29 @@ def _run_explore(args: argparse.Namespace, transport: httpx.BaseTransport | None
 
 
 def _run_fix(args: argparse.Namespace, transport: httpx.BaseTransport | None) -> int:
+    aspect_ids = getattr(args, "aspects", None) or None
+    issue_ids = getattr(args, "issue_ids", None) or None
+
     def body(app: AppContext, limit: int, pruned: int) -> int:
         if pruned:
             app.reporter.message(
                 f"fix: pruned {pruned} issue/state row(s) from aspects no longer in the config"
             )
-        stats = run_fix(app, limit=limit)
-        remaining = app.database.count_issues()
+        if issue_ids:
+            requested = list(dict.fromkeys(issue_ids))
+            found = {issue.id for issue in app.database.list_issues(issue_ids=requested)}
+            missing = [issue_id for issue_id in requested if issue_id not in found]
+            if missing:
+                for issue_id in missing:
+                    print(f"khorek: unknown issue id: {issue_id}", file=sys.stderr)
+                return EXIT_FATAL
+        if (aspect_ids or issue_ids) and (
+            app.database.count_issues(aspect_ids=aspect_ids, issue_ids=issue_ids) == 0
+        ):
+            print(f"khorek: no issues match the filters ({_filter_label(aspect_ids, issue_ids)})")
+            return EXIT_OK
+        stats = run_fix(app, limit=limit, aspect_ids=aspect_ids, issue_ids=issue_ids)
+        remaining = app.database.count_issues(aspect_ids=aspect_ids, issue_ids=issue_ids)
         return EXIT_ERROR if stats.failed or remaining else EXIT_OK
 
     return _run_workflow(
@@ -537,8 +589,10 @@ def _run_fix(args: argparse.Namespace, transport: httpx.BaseTransport | None) ->
 
 
 def _run_explore_and_fix(args: argparse.Namespace, transport: httpx.BaseTransport | None) -> int:
+    aspect_ids = getattr(args, "aspects", None) or None
+
     def body(app: AppContext, limit: int, pruned: int) -> int:
-        stats = run_explore_and_fix(app, limit=limit, pruned=pruned)
+        stats = run_explore_and_fix(app, limit=limit, pruned=pruned, aspect_ids=aspect_ids)
         return EXIT_ERROR if stats.remaining else EXIT_OK
 
     return _run_workflow(

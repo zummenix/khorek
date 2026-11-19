@@ -7,6 +7,7 @@ SQLite database is the source of truth.
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass, field, replace
 from typing import Any, cast
 
@@ -105,9 +106,16 @@ class _Explorer:
             explorer=self.explorer_agent,
         )
 
-    def enumerate_pairs(self) -> list[Pair]:
+    def enumerate_pairs(self, aspect_ids: Collection[str] | None = None) -> list[Pair]:
+        """Enumerate (aspect, file) pairs, optionally restricted to *aspect_ids*.
+
+        An empty or ``None`` filter explores every configured aspect.
+        """
+        wanted = set(aspect_ids) if aspect_ids else None
         pairs: list[Pair] = []
         for aspect in self.app.config.aspects:
+            if wanted is not None and aspect.id not in wanted:
+                continue
             files = enumerate_files(
                 self.app.project_root,
                 aspect.files,
@@ -244,10 +252,19 @@ class _Explorer:
         return graph
 
 
-def run_explore(app: AppContext, limit: int = 0) -> ExploreStats:
-    """Run the explore workflow and return its counters."""
+def run_explore(
+    app: AppContext,
+    limit: int = 0,
+    *,
+    aspect_ids: Collection[str] | None = None,
+) -> ExploreStats:
+    """Run the explore workflow and return its counters.
+
+    ``aspect_ids`` restricts the run to the named aspects (empty/``None``
+    explores every configured aspect).
+    """
     explore = _Explorer(app)
-    pairs = explore.enumerate_pairs()
+    pairs = explore.enumerate_pairs(aspect_ids=aspect_ids)
     graph = explore.build_graph(pairs, limit)
     compiled = graph.compile()
     final = cast(dict[str, Any], compiled.invoke(ExploreState()))

@@ -469,13 +469,15 @@ class Database:
         aspect_ids: Collection[str] | None = None,
         severities: Collection[str] | None = None,
         path_prefixes: Collection[str] | None = None,
+        issue_ids: Collection[int] | None = None,
     ) -> list[Issue]:
         """Return open issues sorted by id.
 
         ``aspect_id``/``path`` are exact matches (used by the workflows);
-        ``aspect_ids``/``severities``/``path_prefixes`` are repeatable filters
-        where values within one argument are OR-ed and different arguments
-        are AND-ed.  A prefix is matched literally (``%``/``_`` escaped).
+        ``aspect_ids``/``severities``/``path_prefixes``/``issue_ids`` are
+        repeatable filters where values within one argument are OR-ed and
+        different arguments are AND-ed.  A prefix is matched literally
+        (``%``/``_`` escaped).
         """
         where, parameters = _issue_filter(
             aspect_id=aspect_id,
@@ -483,6 +485,7 @@ class Database:
             aspect_ids=aspect_ids,
             severities=severities,
             path_prefixes=path_prefixes,
+            issue_ids=issue_ids,
         )
         rows = self.connection.execute(
             f"SELECT * FROM issues{where} ORDER BY id",
@@ -508,6 +511,7 @@ class Database:
         aspect_ids: Collection[str] | None = None,
         severities: Collection[str] | None = None,
         path_prefixes: Collection[str] | None = None,
+        issue_ids: Collection[int] | None = None,
     ) -> int:
         where, parameters = _issue_filter(
             aspect_id=aspect_id,
@@ -515,6 +519,7 @@ class Database:
             aspect_ids=aspect_ids,
             severities=severities,
             path_prefixes=path_prefixes,
+            issue_ids=issue_ids,
         )
         row = self.connection.execute(
             f"SELECT COUNT(*) AS total FROM issues{where}", parameters
@@ -582,16 +587,17 @@ def _issue_filter(
     aspect_ids: Collection[str] | None = None,
     severities: Collection[str] | None = None,
     path_prefixes: Collection[str] | None = None,
-) -> tuple[str, list[str]]:
+    issue_ids: Collection[int] | None = None,
+) -> tuple[str, list[str | int]]:
     """Build the WHERE clause (and parameters) for issue queries.
 
-    Exact ``aspect_id``/``path`` match; ``aspect_ids``/``severities`` are
-    OR-ed within the argument and AND-ed across arguments; ``path_prefixes``
-    are literal prefix matches (``%``/``_`` escaped), OR-ed within the
-    argument.
+    Exact ``aspect_id``/``path`` match; ``aspect_ids``/``severities``/
+    ``issue_ids`` are OR-ed within the argument and AND-ed across arguments;
+    ``path_prefixes`` are literal prefix matches (``%``/``_`` escaped), OR-ed
+    within the argument.
     """
     clauses: list[str] = []
-    parameters: list[str] = []
+    parameters: list[str | int] = []
     if aspect_id is not None:
         clauses.append("aspect_id = ?")
         parameters.append(aspect_id)
@@ -609,6 +615,11 @@ def _issue_filter(
         placeholders = ", ".join("?" for _ in severities)
         clauses.append(f"severity IN ({placeholders})")
         parameters.extend(severities)
+    if issue_ids:
+        ids = sorted({int(issue_id) for issue_id in issue_ids})
+        placeholders = ", ".join("?" for _ in ids)
+        clauses.append(f"id IN ({placeholders})")
+        parameters.extend(ids)
     if path_prefixes:
         prefix_clauses = []
         for prefix in path_prefixes:

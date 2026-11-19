@@ -18,6 +18,7 @@ from tests.conftest import (
     fix_args,
     held_lock,
     make_project,
+    review,
     run_cli,
     seed_issue,
     seed_state,
@@ -34,6 +35,28 @@ def issues_args(project: Project, *extra: str | Path) -> tuple[str | Path, ...]:
 
 def report() -> dict[str, object]:
     return tool_message("report_issues", {"issues": []})
+
+
+def edit(search: str, replace: str, path: str = "src/a.py") -> dict[str, object]:
+    return tool_message("edit_file", {"path": path, "search": search, "replace": replace})
+
+
+def fix_report(summary: str = "applied the fix") -> dict[str, object]:
+    return tool_message("report_fix_result", {"fixed": True, "summary": summary})
+
+
+def _two_aspects() -> list[dict[str, object]]:
+    return [
+        {
+            "id": "comments",
+            "prompt": "Find comments that are inconsistent with the code.",
+            "files": ["src/"],
+        },
+        {"id": "style", "prompt": "Find style issues.", "files": ["src/"]},
+    ]
+
+
+TRUE_VERIFY = [{"cmd": "true", "timeout": 10}]
 
 
 def test_no_arguments_prints_help_and_succeeds(capsys) -> None:
@@ -610,3 +633,143 @@ def test_issues_show_dismiss_delete_missing_db(project, capsys) -> None:
 def _all_ids(project: Project) -> list:
     with Database(project.db_path, project.root, readonly=True) as db:
         return list(db.list_issues())
+
+
+def test_explore_aspect_filter_restricts_pairs(tmp_path: Path, capsys) -> None:
+    project = make_project(
+        tmp_path / "project",
+        files={"src/a.py": "# a correct comment\nvalue = 1\n"},
+        aspects=_two_aspects(),
+    )
+    fake = FakeModel([report()])
+
+    assert run_cli(fake, *explore_args(project, "--aspect", "comments")) == 0
+
+    assert fake.chat_calls == 1
+    with Database(project.db_path, project.root, readonly=True) as database:
+        assert [row.aspect_id for row in database.list_state()] == ["comments"]
+    assert "1 pairs" in capsys.readouterr().out
+
+
+def test_explore_repeatable_aspect_ors_the_values(tmp_path: Path) -> None:
+    project = make_project(
+        tmp_path / "project",
+        files={"src/a.py": "# a correct comment\nvalue = 1\n"},
+        aspects=_two_aspects(),
+    )
+    fake = FakeModel([report(), report()])
+
+    assert run_cli(fake, *explore_args(project, "--aspect", "comments", "--aspect", "style")) == 0
+
+    assert fake.chat_calls == 2
+    with Database(project.db_path, project.root, readonly=True) as database:
+        assert {row.aspect_id for row in database.list_state()} == {"comments", "style"}
+
+
+def test_fix_aspect_filter_restricts_queue_and_exit_code(tmp_path: Path, capsys) -> None:
+    project = make_project(
+        tmp_path / "project",
+        files={"src/a.py": "value = 1\n", "src/b.py": "b = 1\n"},
+        aspects=_two_aspects(),
+        verify=TRUE_VERIFY,
+    )
+    seed_state(project, outcome="issues", path="src/a.py")
+    comments_id = seed_issue(project, aspect_id="comments", path="src/a.py")
+    style_id = seed_issue(project, aspect_id="style", path="src/b.py", description="style issue")
+    fake = FakeModel([edit("value = 1", "value = 2"), fix_report(), review(True, "good")])
+
+    assert run_cli(fake, *fix_args(project, "--aspect", "comments")) == 0
+
+    # Only the comments issue was queued; the style issue is left untouched but
+    # the filtered remaining count is zero, so the run exits 0.
+    assert fake.chat_calls == 3
+    with Database(project.db_path, project.root, readonly=True) as database:
+        remaining = {issue.id for issue in database.list_issues()}
+    assert comments_id not in remaining
+    assert style_id in remaining
+    assert "0 open issues" in capsys.readouterr().out
+
+
+def test_fix_issue_id_filter_restricts_queue(tmp_path: Path, capsys) -> None:
+    project = make_project(
+        tmp_path / "project",
+        files={"src/a.py": "value = 1\n", "src/b.py": "b = 1\n"},
+        verify=TRUE_VERIFY,
+    )
+    seed_state(project, outcome="issues", path="src/a.py")
+    target = seed_issue(project, path="src/a.py", description="target issue")
+    other = seed_issue(project, path="src/b.py", description="other issue")
+    fake = FakeModel([edit("value = 1", "value = 2"), fix_report(), review(True, "good")])
+
+    assert run_cli(fake, *fix_args(project, "--issue-id", str(target))) == 0
+
+    assert fake.chat_calls == 3
+    with Database(project.db_path, project.root, readonly=True) as database:
+        remaining = {issue.id for issue in database.list_issues()}
+    assert remaining == {other}
+    assert "0 open issues" in capsys.readouterr().out
+
+
+def test_fix_unknown_aspect_exits_2_before_any_work(tmp_path: Path, capsys) -> None:
+    project = make_project(tmp_path / "project", verify=TRUE_VERIFY)
+    fake = FakeModel([])
+
+    assert run_cli(fake, *fix_args(project, "--aspect", "nope")) == 2
+
+    captured = capsys.readouterr()
+    assert "unknown aspect: nope (known: comments)" in captured.err
+    assert fake.model_requests == 0
+    assert fake.chat_calls == 0
+    assert not project.db_path.exists()
+
+
+def test_fix_unknown_issue_id_exits_2(tmp_path: Path, capsys) -> None:
+    project = make_project(tmp_path / "project", verify=TRUE_VERIFY)
+    fake = FakeModel([])
+
+    assert run_cli(fake, *fix_args(project, "--issue-id", "999")) == 2
+
+    assert "unknown issue id: 999" in capsys.readouterr().err
+    assert fake.chat_calls == 0
+
+
+def test_fix_filters_that_match_nothing_print_a_note(tmp_path: Path, capsys) -> None:
+    project = make_project(
+        tmp_path / "project",
+        aspects=_two_aspects(),
+        verify=TRUE_VERIFY,
+    )
+    seed_state(project, outcome="issues")
+    issue_id = seed_issue(project, aspect_id="comments")
+    fake = FakeModel([])
+
+    assert run_cli(fake, *fix_args(project, "--aspect", "style", "--issue-id", str(issue_id))) == 0
+
+    captured = capsys.readouterr()
+    assert f"no issues match the filters (--aspect style --issue-id {issue_id})" in captured.out
+    assert "fix summary:" not in captured.out
+    assert fake.chat_calls == 0
+
+
+def test_explore_and_fix_aspect_filter_and_no_issue_id(tmp_path: Path, capsys) -> None:
+    project = make_project(
+        tmp_path / "project",
+        files={"src/a.py": "value = 1\n", "src/b.py": "b = 1\n"},
+        aspects=_two_aspects(),
+        verify=TRUE_VERIFY,
+    )
+    fake = FakeModel([report(), report()])
+
+    assert run_cli(fake, *explore_and_fix_args(project, "--aspect", "comments")) == 0
+
+    assert fake.chat_calls == 2
+    with Database(project.db_path, project.root, readonly=True) as database:
+        assert {row.aspect_id for row in database.list_state()} == {"comments"}
+    output = capsys.readouterr().out
+    assert "explore comments src/a.py" in output
+    assert "explore comments src/b.py" in output
+    assert "explore style" not in output
+
+    with pytest.raises(SystemExit) as exc_info:
+        run_cli(fake, *explore_and_fix_args(project, "--issue-id", "1"))
+    assert exc_info.value.code == 2

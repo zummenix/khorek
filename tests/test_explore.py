@@ -6,15 +6,20 @@ import json
 from pathlib import Path
 
 from khorek.agents.aspect import IssueReport, ReportedIssue, report_issues_parameters
+from khorek.config import load_config
+from khorek.context import AppContext
 from khorek.db import Database
 from khorek.files import sha256_file
-from khorek.workflows.explore import line_count, validate_issues
+from khorek.llm import LLMClient
+from khorek.report import Reporter
+from khorek.workflows.explore import line_count, run_explore, validate_issues
 from tests.conftest import (
     FakeModel,
     Project,
     explore_args,
     make_project,
     run_cli,
+    seed_issue,
     text_message,
     tool_message,
 )
@@ -285,6 +290,63 @@ def test_prune_drift_reports_and_removes_old_aspect(project, capsys) -> None:
         assert db.list_issues() == []
         assert [row.aspect_id for row in db.list_state()] == ["comments"]
     assert "2 pruned" in capsys.readouterr().out
+
+
+def _two_aspects() -> list[dict[str, object]]:
+    return [
+        {
+            "id": "comments",
+            "prompt": "Find comments that are inconsistent with the code.",
+            "files": ["src/"],
+        },
+        {"id": "style", "prompt": "Find style issues.", "files": ["src/"]},
+    ]
+
+
+def test_run_explore_aspect_filter_skips_other_aspects(tmp_path: Path) -> None:
+    project = make_project(
+        tmp_path / "project",
+        files={"src/a.py": "# a correct comment\nvalue = 1\n"},
+        aspects=_two_aspects(),
+    )
+    fake = FakeModel([report()])
+    config = load_config(project.root)
+    with Database(project.db_path, project.root) as database:
+        llm = LLMClient(config.llm, transport=fake.transport)
+        try:
+            app = AppContext(
+                project_root=project.root,
+                config=config,
+                database=database,
+                llm=llm,
+                reporter=Reporter(),
+            )
+            stats = run_explore(app, aspect_ids=["comments"])
+        finally:
+            llm.close()
+
+        assert stats.considered == 1
+        assert fake.chat_calls == 1
+        # The second aspect was never enumerated or explored.
+        assert [row.aspect_id for row in database.list_state()] == ["comments"]
+
+
+def test_explore_aspect_filter_counts_only_that_aspect_in_summary(tmp_path: Path, capsys) -> None:
+    project = make_project(
+        tmp_path / "project",
+        files={"src/a.py": "# a correct comment\nvalue = 1\n"},
+        aspects=_two_aspects(),
+    )
+    seed_issue(project, aspect_id="style", path="src/b.py", description="style issue")
+    fake = FakeModel([report(issue("bad comment", 1, 1, "high"))])
+
+    assert run_cli(fake, *explore_args(project, "--aspect", "comments")) == 0
+
+    with Database(project.db_path, project.root) as database:
+        assert database.count_issues(aspect_ids=["comments"]) == 1
+        assert database.count_issues(aspect_ids=["style"]) == 1
+        assert database.get_state("style", "src/a.py") is None
+    assert "1 open issues" in capsys.readouterr().out
 
 
 def test_limit_stops_after_pair(tmp_path: Path, capsys) -> None:
