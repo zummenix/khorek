@@ -182,6 +182,7 @@ class LLMClient:
 
         steps = 0
         requests = 0
+        tool_calls_used = 0
         repairs = 0
         last_signature: str | None = None
         signature_counts: dict[str, int] = {}
@@ -360,6 +361,14 @@ class LLMClient:
                             f"tool {call.name} returned {type(result).__name__}; "
                             "every tool handler must return a dict",
                         )
+                    tool_calls_used += 1
+                    result = {
+                        **result,
+                        "note": (
+                            f"[tool calls {tool_calls_used}/{max_tool_calls} "
+                            f"– {max_tool_calls - tool_calls_used} left]"
+                        ),
+                    }
                     try:
                         content = json.dumps(result, ensure_ascii=False)
                     except (TypeError, ValueError) as exc:

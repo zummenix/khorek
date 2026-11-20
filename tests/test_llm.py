@@ -9,6 +9,7 @@ import httpx
 import pytest
 from pydantic import BaseModel
 
+from khorek.agents.tools import read_only_tools
 from khorek.config import LLMConfig
 from khorek.llm import AgentError, LLMClient, ModelUnavailable, Tool, ToolValidationError
 from tests.conftest import FakeModel, text_message, tool_message
@@ -425,3 +426,125 @@ def test_finish_reason_length_without_tool_call_aborts_immediately() -> None:
         )
     assert exc_info.value.code == "budget"
     assert "thinking loop" in str(exc_info.value)
+
+
+# -- budget note ---------------------------------------------
+
+
+def _collect_notes(fake: FakeModel) -> list[str]:
+    """Every budget ``note`` that appeared in any request's tool messages."""
+    notes: list[str] = []
+    for request in fake.chat_requests:
+        for message in request["messages"]:
+            if message.get("role") != "tool":
+                continue
+            try:
+                parsed = json.loads(message.get("content"))
+            except (TypeError, ValueError):
+                continue
+            if isinstance(parsed, dict) and isinstance(parsed.get("note"), str):
+                notes.append(parsed["note"])
+    return notes
+
+
+def test_non_terminal_tool_result_carries_budget_note() -> None:
+    fake = FakeModel(
+        [
+            tool_message("echo", {"text": "hi"}),
+            tool_message("report", {"value": "done"}),
+        ]
+    )
+    result = _run(_client(fake), max_calls=20)
+    assert isinstance(result.data, Report)
+    # The echo result is visible to the model in the second (terminal) request,
+    # stamped with the remaining-budget note.
+    payload = json.loads(fake.tool_results(1)[0])
+    assert payload["echo"] == "hi"
+    assert payload["note"] == "[tool calls 1/20 – 19 left]"
+
+
+def test_budget_note_excludes_repairs_and_text_nudges() -> None:
+    fake = FakeModel(
+        [
+            tool_message("echo", "{not json"),  # malformed -> repair, does not count
+            text_message("thinking..."),  # text reply -> nudge, does not count
+            tool_message("echo", {"text": "ok"}),  # first real tool -> 1/20
+            tool_message("report", {"value": "done"}),
+        ]
+    )
+    result = _run(_client(fake), max_calls=20)
+    assert isinstance(result.data, Report)
+    assert _collect_notes(fake) == ["[tool calls 1/20 – 19 left]"]
+
+
+def test_terminal_report_turn_gets_no_note() -> None:
+    fake = FakeModel([tool_message("report", {"value": "done"})])
+    result = _run(_client(fake), max_calls=20)
+    assert isinstance(result.data, Report)
+    # The terminal tool returns before any note is stamped, so no tool message
+    # ever carries one.
+    assert _collect_notes(fake) == []
+
+
+def test_parallel_tool_calls_each_get_a_note() -> None:
+    parallel = {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [
+            {
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "echo", "arguments": json.dumps({"text": "a"})},
+            },
+            {
+                "id": "call_2",
+                "type": "function",
+                "function": {"name": "echo", "arguments": json.dumps({"text": "b"})},
+            },
+        ],
+    }
+    fake = FakeModel([parallel, tool_message("report", {"value": "done"})])
+    result = _run(_client(fake), max_calls=20)
+    assert isinstance(result.data, Report)
+    results = [json.loads(content) for content in fake.tool_results(1)]
+    assert [result["echo"] for result in results] == ["a", "b"]
+    assert [result["note"] for result in results] == [
+        "[tool calls 1/20 – 19 left]",
+        "[tool calls 2/20 – 18 left]",
+    ]
+
+
+def test_budget_note_shows_zero_left_before_abort() -> None:
+    fake = FakeModel(
+        [
+            tool_message("echo", {"text": "one"}),
+            tool_message("echo", {"text": "two"}),
+        ]
+    )
+    with pytest.raises(AgentError) as exc_info:
+        _run(_client(fake), max_calls=1)
+    assert exc_info.value.code == "budget"
+    # Inform-only: the last allowed call is stamped with 0 left before the abort.
+    assert _collect_notes(fake) == ["[tool calls 1/1 – 0 left]"]
+
+
+def test_text_final_agent_stamps_notes_on_its_tool_calls(project) -> None:
+    # The explorer is a text-final agent that runs read-only tools; its results
+    # get notes just like any other agent's.
+    fake = FakeModel(
+        [
+            tool_message("read_file", {"path": "src/a.py"}),
+            text_message("the value is defined on line 2"),
+        ]
+    )
+    client = LLMClient(_config(), transport=fake.transport, max_prompt_bytes=400_000)
+    client.run_agent(
+        system_prompt="system",
+        user_prompt="where is the value?",
+        tools=read_only_tools(project.root, 200_000, 16_000),
+        max_tool_calls=5,
+        force_tool_call=False,
+        text_is_final=True,
+        agent="explorer",
+    )
+    assert _collect_notes(fake) == ["[tool calls 1/5 – 4 left]"]
