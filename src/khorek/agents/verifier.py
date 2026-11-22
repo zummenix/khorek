@@ -19,7 +19,6 @@ from khorek.llm import LLMClient, Tool
 from khorek.prompts import default_prompt
 from khorek.verify import Failure
 
-VERIFIER_TOOL_NAMES = frozenset({"report_verification"})
 _VERIFIER_MAX_TURNS = 2
 
 
@@ -135,7 +134,6 @@ class VerifierAgent:
 
 
 __all__ = [
-    "VERIFIER_TOOL_NAMES",
     "VerificationReport",
     "VerifierAgent",
     "VerifierFailure",

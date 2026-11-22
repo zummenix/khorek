@@ -77,6 +77,10 @@ class DefaultsConfig(_StrictModel):
     max_issues_per_file: int = Field(default=DEFAULT_MAX_ISSUES_PER_FILE, gt=0)
     max_file_bytes: int = Field(default=DEFAULT_MAX_FILE_BYTES, gt=0)
     max_prompt_bytes: int = Field(default=DEFAULT_MAX_PROMPT_BYTES, gt=0)
+    # Each tool trims its own serialized result to this budget.  The fixed
+    # result metadata (paths, line numbers, wrapper keys) is a floor: a budget
+    # below it cannot be honored, so the tool returns the smallest valid result
+    # (empty payload, truncated=true) instead.
     max_tool_output_bytes: int = Field(default=DEFAULT_MAX_TOOL_OUTPUT_BYTES, gt=0)
     max_cycles: int = Field(default=DEFAULT_MAX_CYCLES, gt=0)
 

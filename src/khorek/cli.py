@@ -465,7 +465,6 @@ def _run_workflow(
         config.llm,
         transport=transport,
         max_prompt_bytes=config.defaults.max_prompt_bytes,
-        max_tool_output_bytes=config.defaults.max_tool_output_bytes,
         tracer=tracer,
     )
     exit_code = EXIT_FATAL

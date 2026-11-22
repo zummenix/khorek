@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from khorek.agents.tools import read_only_tools
+from khorek.agents.tools import fit_result, read_only_tools, serialized_size
 from khorek.config import DefaultsConfig, ExplorerAgentConfig
 from khorek.llm import LLMClient, Tool, ToolValidationError
 from khorek.prompts import default_prompt
@@ -24,7 +24,9 @@ class ExplorerAgent:
     ) -> None:
         self._client = client
         self._config = config
-        self._tools = read_only_tools(project_root, defaults.max_file_bytes)
+        self._tools = read_only_tools(
+            project_root, defaults.max_file_bytes, defaults.max_tool_output_bytes
+        )
         self._system_prompt = default_prompt("explorer")
 
     def ask(self, question: str) -> str:
@@ -44,7 +46,59 @@ class ExplorerAgent:
         return result.text
 
 
-def ask_explorer_tool(explorer: ExplorerAgent, max_handoffs: int) -> Tool:
+def _fit_answer(answer: str, max_bytes: int) -> dict[str, Any]:
+    """Fit the whole ``ask_explorer`` result, JSON wrapper included, to *max_bytes*.
+
+    The answer is cut on a character boundary.  When the fixed wrapper alone
+    exceeds the cap, the answer is empty and the wrapper is the floor.
+    """
+
+    def build(text: str, truncated: bool) -> dict[str, Any]:
+        return {"answer": text, "truncated": truncated}
+
+    if serialized_size(build(answer, False)) <= max_bytes:
+        return build(answer, False)
+
+    low, high, best = 0, len(answer), 0
+    while low <= high:
+        middle = (low + high) // 2
+        if serialized_size(build(answer[:middle], True)) <= max_bytes:
+            best = middle
+            low = middle + 1
+        else:
+            high = middle - 1
+    return build(answer[:best], True)
+
+
+def _handoff_limit_result(max_handoffs: int, max_bytes: int) -> dict[str, Any]:
+    """The hand-off-limit error, shrunk to fit *max_bytes*.
+
+    The full message is preferred; when it does not fit, the actionable hint
+    and then the count are dropped, and ``truncated`` marks the cut.
+    """
+    return fit_result(
+        {
+            "error": (
+                f"hand-off limit reached ({max_handoffs} per aspect run); "
+                "use read_file, grep, or list_files instead"
+            ),
+            "truncated": False,
+        },
+        [
+            {
+                "error": f"hand-off limit reached ({max_handoffs} per aspect run)",
+                "truncated": True,
+            },
+            {"error": "hand-off limit reached", "truncated": True},
+            {"truncated": True},
+        ],
+        max_bytes,
+    )
+
+
+def ask_explorer_tool(
+    explorer: ExplorerAgent, max_handoffs: int, max_tool_output_bytes: int
+) -> Tool:
     """Create the ``ask_explorer`` tool with a per-aspect-run hand-off budget."""
     handoffs = 0
 
@@ -54,14 +108,9 @@ def ask_explorer_tool(explorer: ExplorerAgent, max_handoffs: int) -> Tool:
         if not isinstance(question, str) or not question.strip():
             raise ToolValidationError("argument 'question' must be a non-empty string")
         if handoffs >= max_handoffs:
-            return {
-                "error": (
-                    f"hand-off limit reached ({max_handoffs} per aspect run); "
-                    "use read_file, grep, or list_files instead"
-                )
-            }
+            return _handoff_limit_result(max_handoffs, max_tool_output_bytes)
         handoffs += 1
-        return {"answer": explorer.ask(question)}
+        return _fit_answer(explorer.ask(question), max_tool_output_bytes)
 
     return Tool(
         name="ask_explorer",
