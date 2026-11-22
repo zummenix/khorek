@@ -456,11 +456,6 @@ class Database:
             )
         return cursor.rowcount
 
-    def delete_issues_for_path(self, path: str) -> int:
-        with self.connection:
-            cursor = self.connection.execute("DELETE FROM issues WHERE path = ?", (path,))
-        return cursor.rowcount
-
     def list_issues(
         self,
         *,

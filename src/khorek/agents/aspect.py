@@ -164,10 +164,6 @@ def report_revalidation_tool() -> Tool:
     )
 
 
-def _line_count(content: str) -> int:
-    return max(1, len(content.splitlines()))
-
-
 class AspectAgent:
     """Runs one aspect over one file in a bounded tool-calling loop."""
 
