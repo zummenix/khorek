@@ -115,7 +115,7 @@ class VerifierAgent:
 
     def summarise(self, failures: Sequence[Failure]) -> str:
         """Return the Verifier's summary for *failures*."""
-        result = self._client.run_agent(
+        data = self._client.run_agent(
             system_prompt=self._system_prompt,
             user_prompt=_user_prompt(failures),
             tools=self._tools,
@@ -126,10 +126,7 @@ class VerifierAgent:
             terminal_schema=VerificationReport,
             agent="verifier",
             reasoning_effort=self._config.reasoning_effort,
-        )
-        data = result.data
-        if not isinstance(data, VerificationReport):
-            raise TypeError("report_verification did not return a VerificationReport")
+        ).data_of(VerificationReport)
         return data.summary.strip()
 
 

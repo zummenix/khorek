@@ -18,7 +18,7 @@ import time
 import warnings
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, TypeVar
 
 import httpx
 from pydantic import BaseModel, ValidationError
@@ -70,12 +70,21 @@ class Tool:
     handler: ToolHandler | None = None
 
 
+M = TypeVar("M", bound=BaseModel)
+
+
 @dataclass
 class AgentResult:
     """Final result of an agent loop."""
 
     text: str = ""
     data: BaseModel | None = None
+
+    def data_of(self, model: type[M]) -> M:
+        """Return terminal data if it has the expected model type."""
+        if not isinstance(self.data, model):
+            raise TypeError(f"agent returned {type(self.data).__name__}, expected {model.__name__}")
+        return self.data
 
 
 @dataclass(frozen=True)

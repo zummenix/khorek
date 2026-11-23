@@ -303,7 +303,7 @@ class FixerAgent:
         previous_source: str | None = None,
     ) -> FixOutcome:
         """Run one Fixer round and return its reported outcome."""
-        result = self._client.run_agent(
+        data = self._client.run_agent(
             system_prompt=self._system_prompt,
             user_prompt=_build_user_prompt(issue, path, content, previous_failure, previous_source),
             tools=self._tools,
@@ -314,10 +314,7 @@ class FixerAgent:
             terminal_schema=FixReport,
             agent=f"fixer:#{issue.id}:{path}",
             reasoning_effort=self._config.reasoning_effort,
-        )
-        data = result.data
-        if not isinstance(data, FixReport):
-            raise TypeError("report_fix_result did not return a FixReport")
+        ).data_of(FixReport)
         return FixOutcome(fixed=data.fixed, summary=data.summary.strip())
 
 

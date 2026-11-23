@@ -100,7 +100,7 @@ class ReviewerAgent:
 
     def review(self, issue: Issue, diff: str, verify_status: list[str]) -> ReviewOutcome:
         """Run one Reviewer round and return its verdict."""
-        result = self._client.run_agent(
+        data = self._client.run_agent(
             system_prompt=self._system_prompt,
             user_prompt=_user_prompt(issue, diff, verify_status),
             tools=self._tools,
@@ -111,10 +111,7 @@ class ReviewerAgent:
             terminal_schema=ReviewReport,
             agent=f"reviewer:#{issue.id}:{issue.path}",
             reasoning_effort=self._config.reasoning_effort,
-        )
-        data = result.data
-        if not isinstance(data, ReviewReport):
-            raise TypeError("report_review did not return a ReviewReport")
+        ).data_of(ReviewReport)
         return ReviewOutcome(approved=data.approved, summary=data.summary.strip())
 
 

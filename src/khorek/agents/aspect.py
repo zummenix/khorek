@@ -204,7 +204,7 @@ class AspectAgent:
             "Report your findings for this aspect with report_issues. If there is "
             "nothing to report, call it with an empty list for the `issues` argument."
         )
-        result = self._client.run_agent(
+        return self._client.run_agent(
             system_prompt=self._system_prompt,
             user_prompt=user_prompt,
             tools=tools,
@@ -215,11 +215,7 @@ class AspectAgent:
             terminal_schema=IssueReport,
             agent=f"aspect:{aspect.id}:{path}",
             reasoning_effort=self._config.reasoning_effort,
-        )
-        data = result.data
-        if not isinstance(data, IssueReport):
-            raise TypeError("report_issues did not return an IssueReport")
-        return data
+        ).data_of(IssueReport)
 
     def revalidate(
         self,
@@ -241,7 +237,7 @@ class AspectAgent:
             report_revalidation_tool(),
         ]
         user_prompt = _revalidate_user_prompt(aspect, path, content, issues)
-        result = self._client.run_agent(
+        return self._client.run_agent(
             system_prompt=self._revalidate_prompt,
             user_prompt=user_prompt,
             tools=tools,
@@ -252,11 +248,7 @@ class AspectAgent:
             terminal_schema=RevalidationReport,
             agent=f"aspect:{aspect.id}:{path}:revalidate",
             reasoning_effort=self._config.reasoning_effort,
-        )
-        data = result.data
-        if not isinstance(data, RevalidationReport):
-            raise TypeError("report_revalidation did not return a RevalidationReport")
-        return data
+        ).data_of(RevalidationReport)
 
 
 def _revalidate_user_prompt(

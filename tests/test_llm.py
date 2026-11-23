@@ -9,9 +9,18 @@ import httpx
 import pytest
 from pydantic import BaseModel
 
+from khorek.agents.aspect import IssueReport
+from khorek.agents.fixer import FixReport
 from khorek.agents.tools import read_only_tools
 from khorek.config import LLMConfig
-from khorek.llm import AgentError, LLMClient, ModelUnavailable, Tool, ToolValidationError
+from khorek.llm import (
+    AgentError,
+    AgentResult,
+    LLMClient,
+    ModelUnavailable,
+    Tool,
+    ToolValidationError,
+)
 from tests.conftest import FakeModel, text_message, tool_message
 
 
@@ -69,6 +78,15 @@ def _report_tool() -> Tool:
         parameters=Report.model_json_schema(),
         handler=None,
     )
+
+
+def test_agent_result_data_of_checks_type_and_returns_same_object() -> None:
+    fix_report = FixReport(fixed=True, summary="done")
+    with pytest.raises(TypeError, match="agent returned FixReport, expected IssueReport"):
+        AgentResult(data=fix_report).data_of(IssueReport)
+
+    issue_report = IssueReport(issues=[])
+    assert AgentResult(data=issue_report).data_of(IssueReport) is issue_report
 
 
 def _run(
