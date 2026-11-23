@@ -214,6 +214,10 @@ class _FixWorkflow:
         reset.update(updates)
         return reset
 
+    @staticmethod
+    def _label(issue: Issue) -> str:
+        return f"fix #{issue.id} {issue.aspect_id} {issue.path}"
+
     # -- nodes ---------------------------------------------------------
 
     def _prepare(self, state: FixState) -> dict[str, Any]:
@@ -276,24 +280,13 @@ class _FixWorkflow:
 
         self.app.reporter.fix_attempted(issue.id, issue.aspect_id, issue.path, issue.severity)
         return {
+            **self._reset_issue_fields(),
             "index": next_index,
             "stats": stats,
             "current": issue,
             "snapshotter": snapshotter,
             "pre_fix_sha": current_sha,
             "content": content,
-            "rounds": 0,
-            "previous_failure": None,
-            "previous_source": None,
-            "verified": False,
-            "fix_fixed": False,
-            "fix_summary": "",
-            "fix_error": None,
-            "last_error": None,
-            "handoffs": 0,
-            "review_approved": False,
-            "review_summary": "",
-            "review_error": None,
         }
 
     def _fix(self, state: FixState) -> dict[str, Any]:
@@ -371,7 +364,7 @@ class _FixWorkflow:
         except AgentError as exc:
             summary = fallback_failure_summary(failures)
             self.app.reporter.message(
-                f"fix #{issue.id} {issue.aspect_id} {issue.path}: "
+                f"{self._label(issue)}: "
                 f"verifier error [{exc.code}]: {exc}; using raw failure output"
             )
         if not summary.strip():
@@ -381,9 +374,7 @@ class _FixWorkflow:
         rounds = state.rounds + 1
         status = "timeout" if failures and failures[0].exit_code is None else "failed"
         self.app.reporter.message(
-            f"fix #{issue.id} {issue.aspect_id} {issue.path}: "
-            f"verification {status} "
-            f"(round {rounds}/{self.max_attempts})"
+            f"{self._label(issue)}: verification {status} (round {rounds}/{self.max_attempts})"
         )
         return {
             "verified": False,
@@ -405,8 +396,7 @@ class _FixWorkflow:
             outcome = self.reviewer.review(issue, diff, verify_status)
         except AgentError as exc:
             self.app.reporter.message(
-                f"fix #{issue.id} {issue.aspect_id} {issue.path}: "
-                f"reviewer error [{exc.code}]: {exc}; treating as approved"
+                f"{self._label(issue)}: reviewer error [{exc.code}]: {exc}; treating as approved"
             )
             return {
                 "review_approved": True,
@@ -422,8 +412,7 @@ class _FixWorkflow:
 
         handoffs = state.handoffs + 1
         self.app.reporter.message(
-            f"fix #{issue.id} {issue.aspect_id} {issue.path}: "
-            f"review rejected (handoff {handoffs}/{self.max_handoffs})"
+            f"{self._label(issue)}: review rejected (handoff {handoffs}/{self.max_handoffs})"
         )
         summary = trim_error(outcome.summary)
         return {
@@ -507,9 +496,7 @@ class _FixWorkflow:
             try:
                 state.snapshotter.restore()
             except OSError as exc:
-                self.app.reporter.message(
-                    f"fix #{issue.id} {issue.aspect_id} {issue.path}: restore failed: {exc}"
-                )
+                self.app.reporter.message(f"{self._label(issue)}: restore failed: {exc}")
                 error = trim_error(f"{error}\nrestore failed: {exc}")
 
         # The file was restored (or a failed restore may have changed it); a
