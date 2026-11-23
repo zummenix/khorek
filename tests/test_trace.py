@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import threading
+import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -178,8 +179,41 @@ def test_trace_server_serves_ui_and_api(tmp_path: Path) -> None:
         with urllib.request.urlopen(base + f"/api/runs/{run.id}/events", timeout=5) as response:
             events = json.loads(response.read())["events"]
         assert events[0]["kind"] == "run_start" or events[0]["kind"] == "model_call"
+        with urllib.request.urlopen(
+            base + f"/api/runs/{run.id}/events/{events[0]['seq']}", timeout=5
+        ) as response:
+            assert json.loads(response.read()) == events[0]
         with urllib.request.urlopen(base + f"/api/runs/{run.id}/raw", timeout=5) as response:
             assert b"model_call" in response.read()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_trace_server_api_404_responses_are_specific(tmp_path: Path) -> None:
+    recorder = TraceRecorder(tmp_path / "traces", run={"command": "explore"})
+    recorder.record("model_call", agent="aspect", step=0, request={"messages": []})
+    recorder.close(exit_code=0, status="ok")
+
+    run = TraceStore(tmp_path / "traces").list_runs()[0]
+    server = TraceServer(("127.0.0.1", 0), TraceStore(tmp_path / "traces"))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        for path, message in (
+            ("/api/runs/unknown-run", "unknown run: unknown-run"),
+            (f"/api/runs/{run.id}/events/999999", "unknown event: 999999"),
+        ):
+            try:
+                urllib.request.urlopen(base + path, timeout=5)
+            except urllib.error.HTTPError as error:
+                with error:
+                    assert error.code == 404
+                    assert json.loads(error.read()) == {"error": message}
+            else:
+                raise AssertionError(f"expected 404 for {path}")
     finally:
         server.shutdown()
         server.server_close()
