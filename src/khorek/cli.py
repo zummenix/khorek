@@ -6,6 +6,8 @@ import argparse
 import shlex
 import sys
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 
 import httpx
@@ -28,8 +30,8 @@ from khorek.llm import LLMClient, ModelUnavailable
 from khorek.lock import LockError, LockHeld, acquire
 from khorek.report import Reporter
 from khorek.trace import TraceRecorder, trace_dir_for
+from khorek.trace_server import ServerInfo, start_viewer, stop_viewer
 from khorek.trace_server import serve as serve_traces
-from khorek.trace_server import start_viewer, stop_viewer
 from khorek.workflows.explore import run_explore
 from khorek.workflows.explore_and_fix import run_explore_and_fix
 from khorek.workflows.fix import run_fix
@@ -208,22 +210,12 @@ def _add_issues_root_arguments(
     arguments already parsed by the parent ``issues`` parser (argparse
     applies subparser defaults over parent values).
     """
-    root_default = argparse.SUPPRESS if suppressed else "."
-    if path_long:
-        parser.add_argument(
-            "-p",
-            "--path",
-            dest="path",
-            default=root_default,
-            help="project root to operate on (default: current directory)",
-        )
-    else:
-        parser.add_argument(
-            "-p",
-            dest="path",
-            default=root_default,
-            help="project root to operate on (default: current directory)",
-        )
+    parser.add_argument(
+        *("-p", "--path") if path_long else ("-p",),
+        dest="path",
+        default=argparse.SUPPRESS if suppressed else ".",
+        help="project root to operate on (default: current directory)",
+    )
     parser.add_argument(
         "--db",
         default=argparse.SUPPRESS if suppressed else None,
@@ -375,22 +367,23 @@ def _load_config_or_report(project_root: Path, args: argparse.Namespace) -> Conf
         return None
 
 
-def _run_workflow(
+@dataclass
+class RunSetup:
+    project_root: Path
+    config: Config
+    db_path: Path
+    llm: LLMClient
+    tracer: TraceRecorder | None = None
+
+
+def _prepare_run(
     args: argparse.Namespace,
-    transport: httpx.BaseTransport | None,
     *,
     command: str,
+    transport: httpx.BaseTransport | None,
     require_verify: bool,
-    body: WorkflowBody,
-) -> int:
-    """Shared preamble/teardown for every workflow command.
-
-    Resolve the project, load and validate config, validate the requested
-    ``--aspect`` values, optionally require a ``[[verify]]`` command, take the
-    lock, open and validate the DB, prune config drift, run *body*, then
-    release everything.  The model probe and the trace recorder are set up
-    before the lock so a fatal run still leaves a record of why it failed.
-    """
+) -> RunSetup | int:
+    """Resolve and validate workflow inputs, then prepare model tracing."""
     project_root = _resolve_project(args.path)
     if project_root is None:
         return EXIT_FATAL
@@ -467,30 +460,85 @@ def _run_workflow(
         max_prompt_bytes=config.defaults.max_prompt_bytes,
         tracer=tracer,
     )
+    return RunSetup(
+        project_root=project_root,
+        config=config,
+        db_path=db_path,
+        llm=llm,
+        tracer=tracer,
+    )
+
+
+def _teardown(setup: RunSetup, viewer: ServerInfo | None, exit_code: int) -> None:
+    """Close run resources and print trace-viewer diagnostics."""
+    setup.llm.close()
+    if setup.tracer is not None:
+        setup.tracer.close(
+            exit_code=exit_code,
+            status="fatal" if exit_code == EXIT_FATAL else ("issues" if exit_code else "ok"),
+        )
+        print(f"trace: {setup.tracer.run_dir}", flush=True)
+    if viewer is not None:
+        print(
+            f"khorek traces: still running at {viewer.url} (pid {viewer.pid})",
+            flush=True,
+        )
+        print(
+            f"khorek traces: stop it with `khorek traces --stop --trace-dir "
+            f"{shlex.quote(str(viewer.root))}` (or kill {viewer.pid})",
+            flush=True,
+        )
+
+
+def _run_workflow(
+    args: argparse.Namespace,
+    transport: httpx.BaseTransport | None,
+    *,
+    command: str,
+    require_verify: bool,
+    body: WorkflowBody,
+) -> int:
+    """Run a workflow body with the shared preamble and teardown.
+
+    The model probe and trace recorder are set up before the lock so a fatal
+    run still leaves a record of why it failed.
+    """
+    prepared = _prepare_run(
+        args,
+        command=command,
+        transport=transport,
+        require_verify=require_verify,
+    )
+    if isinstance(prepared, int):
+        return prepared
+
+    setup = prepared
     exit_code = EXIT_FATAL
     viewer = None
     try:
         try:
-            llm.preflight()
+            setup.llm.preflight()
         except ModelUnavailable as exc:
             return _fail(str(exc))
 
         try:
-            with acquire(db_path):
+            with acquire(setup.db_path):
                 try:
-                    with Database(db_path, project_root) as database:
+                    with Database(setup.db_path, setup.project_root) as database:
                         reporter = Reporter()
-                        pruned = database.prune_drift([aspect.id for aspect in config.aspects])
-                        app = AppContext(
-                            project_root=project_root,
-                            config=config,
-                            database=database,
-                            llm=llm,
-                            reporter=reporter,
-                            tracer=tracer,
+                        pruned = database.prune_drift(
+                            [aspect.id for aspect in setup.config.aspects]
                         )
-                        if tracer is not None:
-                            viewer = start_viewer(tracer.trace_root)
+                        app = AppContext(
+                            project_root=setup.project_root,
+                            config=setup.config,
+                            database=database,
+                            llm=setup.llm,
+                            reporter=reporter,
+                            tracer=setup.tracer,
+                        )
+                        if setup.tracer is not None:
+                            viewer = start_viewer(setup.tracer.trace_root)
                             if viewer is not None:
                                 print(
                                     f"khorek traces: {viewer.url} ({viewer.root})",
@@ -505,23 +553,7 @@ def _run_workflow(
         except LockError as exc:
             return _fail(str(exc))
     finally:
-        llm.close()
-        if tracer is not None:
-            tracer.close(
-                exit_code=exit_code,
-                status="fatal" if exit_code == EXIT_FATAL else ("issues" if exit_code else "ok"),
-            )
-            print(f"trace: {tracer.run_dir}", flush=True)
-        if viewer is not None:
-            print(
-                f"khorek traces: still running at {viewer.url} (pid {viewer.pid})",
-                flush=True,
-            )
-            print(
-                f"khorek traces: stop it with `khorek traces --stop --trace-dir "
-                f"{shlex.quote(str(viewer.root))}` (or kill {viewer.pid})",
-                flush=True,
-            )
+        _teardown(setup, viewer, exit_code)
 
 
 def _filter_label(aspect_ids: Sequence[str] | None, issue_ids: Sequence[int] | None) -> str:
@@ -843,6 +875,14 @@ def _run_issues_mutation(
     return _report_outcomes(verb, outcomes)
 
 
+_HANDLERS = {
+    "list": _run_issues_list,
+    "show": _run_issues_show,
+    "dismiss": partial(_run_issues_mutation, verb="dismissed", operation=dismiss),
+    "delete": partial(_run_issues_mutation, verb="deleted", operation=delete_issues),
+}
+
+
 def _run_issues(args: argparse.Namespace) -> int:
     """Shared preamble for the ``khorek issues`` commands.
 
@@ -863,19 +903,10 @@ def _run_issues(args: argparse.Namespace) -> int:
             return EXIT_OK
         print(f"khorek: no database at {db_path} (run khorek explore first)", file=sys.stderr)
         return EXIT_ERROR
-    if subcommand == "list":
-        return _run_issues_list(args, project_root, db_path)
-    if subcommand == "show":
-        return _run_issues_show(args, project_root, db_path)
-    if subcommand == "dismiss":
-        return _run_issues_mutation(
-            args, project_root, db_path, verb="dismissed", operation=dismiss
-        )
-    if subcommand == "delete":
-        return _run_issues_mutation(
-            args, project_root, db_path, verb="deleted", operation=delete_issues
-        )
-    return _fail(f"unknown issues subcommand: {subcommand}")
+    handler = _HANDLERS.get(subcommand)
+    if handler is None:
+        return _fail(f"unknown issues subcommand: {subcommand}")
+    return handler(args, project_root, db_path)
 
 
 def main(

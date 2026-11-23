@@ -9,9 +9,19 @@ import httpx
 import pytest
 from pydantic import BaseModel
 
+from khorek.agents.aspect import IssueReport
+from khorek.agents.fixer import FixReport
 from khorek.agents.tools import read_only_tools
 from khorek.config import LLMConfig
-from khorek.llm import AgentError, LLMClient, ModelUnavailable, Tool, ToolValidationError
+from khorek.llm import (
+    AgentError,
+    AgentResult,
+    LLMClient,
+    ModelUnavailable,
+    Tool,
+    ToolValidationError,
+)
+from khorek.trace import TraceRecorder, TraceStore
 from tests.conftest import FakeModel, text_message, tool_message
 
 
@@ -69,6 +79,15 @@ def _report_tool() -> Tool:
         parameters=Report.model_json_schema(),
         handler=None,
     )
+
+
+def test_agent_result_data_of_checks_type_and_returns_same_object() -> None:
+    fix_report = FixReport(fixed=True, summary="done")
+    with pytest.raises(TypeError, match="agent returned FixReport, expected IssueReport"):
+        AgentResult(data=fix_report).data_of(IssueReport)
+
+    issue_report = IssueReport(issues=[])
+    assert AgentResult(data=issue_report).data_of(IssueReport) is issue_report
 
 
 def _run(
@@ -306,6 +325,35 @@ def test_timeout_is_structured() -> None:
             text_is_final=True,
         )
     assert exc_info.value.code == "timeout"
+
+
+def test_no_choices_response_records_http_error(tmp_path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/models"):
+            return httpx.Response(200, json={"data": []})
+        return httpx.Response(200, json={"choices": []})
+
+    trace_root = tmp_path / "traces"
+    recorder = TraceRecorder(trace_root)
+    client = LLMClient(_config(), transport=httpx.MockTransport(handler), tracer=recorder)
+    with pytest.raises(AgentError, match="model response has no choices") as exc_info:
+        client.run_agent(
+            system_prompt="system",
+            user_prompt="user",
+            tools=[_echo_tool()],
+            max_tool_calls=2,
+            force_tool_call=False,
+            text_is_final=True,
+        )
+    recorder.close()
+
+    assert exc_info.value.code == "http"
+    events = TraceStore(trace_root).events(recorder.run_id)
+    call = next(event for event in events if event["kind"] == "model_call")
+    assert call["error"]["code"] == "http"
+    assert call["error"]["message"] == "model response has no choices"
+    assert call["status"] == 200
+    assert call["duration_ms"] is not None
 
 
 def test_payload_caps_tokens_and_disables_thinking() -> None:
@@ -548,3 +596,34 @@ def test_text_final_agent_stamps_notes_on_its_tool_calls(project) -> None:
         agent="explorer",
     )
     assert _collect_notes(fake) == ["[tool calls 1/5 – 4 left]"]
+
+
+def test_unexpected_handler_error_is_traced_and_becomes_schema_error(tmp_path) -> None:
+    def broken(_arguments: dict[str, Any]) -> dict[str, Any]:
+        raise RuntimeError("handler exploded")
+
+    tool = Tool(
+        name="broken",
+        description="Fails.",
+        parameters={"type": "object", "properties": {}, "required": []},
+        handler=broken,
+    )
+    fake = FakeModel([tool_message("broken", {})])
+    trace_root = tmp_path / "traces"
+    recorder = TraceRecorder(trace_root)
+    client = LLMClient(_config(), transport=fake.transport, tracer=recorder)
+    with pytest.raises(AgentError, match="tool broken failed: handler exploded") as exc_info:
+        client.run_agent(
+            system_prompt="system",
+            user_prompt="user",
+            tools=[tool],
+            max_tool_calls=1,
+            force_tool_call=False,
+            text_is_final=True,
+        )
+    recorder.close()
+
+    assert exc_info.value.code == "schema"
+    events = TraceStore(trace_root).events(recorder.run_id)
+    tool_event = next(event for event in events if event["kind"] == "tool_call")
+    assert tool_event["error"] == "handler exploded"

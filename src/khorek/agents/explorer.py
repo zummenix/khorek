@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from khorek.agents.tools import fit_result, read_only_tools, serialized_size
+from khorek.agents.tools import count_that_fits, fit_result, read_only_tools, serialized_size
 from khorek.config import DefaultsConfig, ExplorerAgentConfig
 from khorek.llm import LLMClient, Tool, ToolValidationError
 from khorek.prompts import default_prompt
@@ -59,14 +59,11 @@ def _fit_answer(answer: str, max_bytes: int) -> dict[str, Any]:
     if serialized_size(build(answer, False)) <= max_bytes:
         return build(answer, False)
 
-    low, high, best = 0, len(answer), 0
-    while low <= high:
-        middle = (low + high) // 2
-        if serialized_size(build(answer[:middle], True)) <= max_bytes:
-            best = middle
-            low = middle + 1
-        else:
-            high = middle - 1
+    best = count_that_fits(
+        len(answer), lambda count: serialized_size(build(answer[:count], True)) <= max_bytes
+    )
+    if best < 0:
+        best = 0  # the empty answer is the floor, as today
     return build(answer[:best], True)
 
 

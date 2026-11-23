@@ -18,9 +18,11 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
+from khorek.agents.arguments import string_argument
+from khorek.agents.schema import terminal_tool
 from khorek.agents.tools import fit_result, read_file_tool
 from khorek.config import DefaultsConfig, FixerAgentConfig
-from khorek.content import format_file_lines
+from khorek.content import format_file_lines, line_count
 from khorek.db import Issue
 from khorek.files import (
     PathEscapeError,
@@ -52,13 +54,6 @@ class FixOutcome:
     summary: str
 
 
-def _string_argument(arguments: dict[str, Any], name: str, *, default: str | None = None) -> str:
-    value = arguments.get(name, default)
-    if not isinstance(value, str):
-        raise ToolValidationError(f"argument {name!r} must be a string")
-    return value
-
-
 def _resolve_existing(root: Path, raw: str) -> tuple[Path, str]:
     """Resolve an existing file inside the root, for editing."""
     root_real = Path(os.path.realpath(root))
@@ -75,9 +70,9 @@ def edit_file_tool(root: Path, snapshotter: Snapshotter, max_tool_output_bytes: 
     """Create the exact-match ``edit_file`` tool."""
 
     def handler(arguments: dict[str, Any]) -> dict[str, object]:
-        raw = _string_argument(arguments, "path")
-        search = _string_argument(arguments, "search")
-        replace = _string_argument(arguments, "replace")
+        raw = string_argument(arguments, "path")
+        search = string_argument(arguments, "search")
+        replace = string_argument(arguments, "replace")
         if not search:
             raise ToolValidationError("search text must not be empty")
         if search == replace:
@@ -110,7 +105,7 @@ def edit_file_tool(root: Path, snapshotter: Snapshotter, max_tool_output_bytes: 
             {
                 "path": relative,
                 "replacements": 1,
-                "line_count": max(1, len(updated.splitlines())),
+                "line_count": line_count(updated),
                 "truncated": False,
             },
             [{"path": relative, "truncated": True}, {"truncated": True}],
@@ -152,8 +147,8 @@ def write_file_tool(root: Path, snapshotter: Snapshotter, max_tool_output_bytes:
     """Create the ``write_file`` tool (overwrites or creates a UTF-8 file)."""
 
     def handler(arguments: dict[str, Any]) -> dict[str, object]:
-        raw = _string_argument(arguments, "path")
-        content = _string_argument(arguments, "content")
+        raw = string_argument(arguments, "path")
+        content = string_argument(arguments, "content")
         try:
             target = resolve_for_write(root, raw)
         except PathEscapeError as exc:
@@ -208,15 +203,14 @@ def write_file_tool(root: Path, snapshotter: Snapshotter, max_tool_output_bytes:
 
 def report_fix_result_tool() -> Tool:
     """The terminal ``report_fix_result`` tool."""
-    return Tool(
-        name="report_fix_result",
-        description=(
+    return terminal_tool(
+        "report_fix_result",
+        (
             "Report the outcome for this issue. Call with fixed=true only after "
             "you actually changed the file; the harness verifies the change and "
             "runs the configured checks. This must be your final call."
         ),
-        parameters=FixReport.model_json_schema(),
-        handler=None,
+        FixReport,
     )
 
 
@@ -227,8 +221,7 @@ def _build_user_prompt(
     previous_failure: str | None,
     previous_source: str | None = None,
 ) -> str:
-    lines = content.splitlines()
-    count = max(1, len(lines))
+    count = line_count(content)
     start = min(max(1, issue.line_start), count)
     end = min(max(issue.line_end, start), count)
 
@@ -303,7 +296,7 @@ class FixerAgent:
         previous_source: str | None = None,
     ) -> FixOutcome:
         """Run one Fixer round and return its reported outcome."""
-        result = self._client.run_agent(
+        data = self._client.run_agent(
             system_prompt=self._system_prompt,
             user_prompt=_build_user_prompt(issue, path, content, previous_failure, previous_source),
             tools=self._tools,
@@ -314,10 +307,7 @@ class FixerAgent:
             terminal_schema=FixReport,
             agent=f"fixer:#{issue.id}:{path}",
             reasoning_effort=self._config.reasoning_effort,
-        )
-        data = result.data
-        if not isinstance(data, FixReport):
-            raise TypeError("report_fix_result did not return a FixReport")
+        ).data_of(FixReport)
         return FixOutcome(fixed=data.fixed, summary=data.summary.strip())
 
 

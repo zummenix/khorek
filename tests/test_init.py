@@ -6,7 +6,7 @@ from pathlib import Path
 
 from khorek.cli import build_parser, main
 from khorek.config import AspectConfig, VerifyCommand, load_config
-from khorek.init import Answers, resolve_config_name
+from khorek.init import Answers, InitAnswers, render_init_config, resolve_config_name
 from tests.conftest import FakeModel
 
 
@@ -127,6 +127,26 @@ files = ["*"]
             id="comments", prompt="Find comments that are inconsistent with the code.", files=["*"]
         ),
     ]
+
+
+def test_rendered_init_config_round_trips(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("KHOREK_LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("KHOREK_LLM_MODEL", raising=False)
+    destination = tmp_path / "project"
+    destination.mkdir()
+    answers = InitAnswers(
+        base_url="http://localhost:11434/v1",
+        model="qwen3.8:27b-mxfp8",
+        verify_cmd="ruff format --check .",
+        aspect=None,
+    )
+    (destination / "khorek.toml").write_text(render_init_config(answers), encoding="utf-8")
+
+    config = load_config(destination)
+
+    assert config.llm.base_url == answers.base_url
+    assert config.llm.model == answers.model
+    assert config.verify[0].cmd == answers.verify_cmd
 
 
 def test_init_asks_the_expected_prompts_in_order(tmp_path: Path) -> None:

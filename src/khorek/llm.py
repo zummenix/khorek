@@ -17,8 +17,8 @@ import json
 import time
 import warnings
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
-from typing import Any, Literal
+from dataclasses import dataclass, field
+from typing import Any, Literal, TypeVar
 
 import httpx
 from pydantic import BaseModel, ValidationError
@@ -70,6 +70,9 @@ class Tool:
     handler: ToolHandler | None = None
 
 
+M = TypeVar("M", bound=BaseModel)
+
+
 @dataclass
 class AgentResult:
     """Final result of an agent loop."""
@@ -77,12 +80,34 @@ class AgentResult:
     text: str = ""
     data: BaseModel | None = None
 
+    def data_of(self, model: type[M]) -> M:
+        """Return terminal data if it has the expected model type."""
+        if not isinstance(self.data, model):
+            raise TypeError(f"agent returned {type(self.data).__name__}, expected {model.__name__}")
+        return self.data
+
 
 @dataclass(frozen=True)
 class _ToolCall:
     call_id: str
     name: str
     arguments: Any
+
+
+@dataclass
+class _AgentState:
+    steps: int = 0
+    requests: int = 0
+    tool_calls_used: int = 0
+    repairs: int = 0
+    last_signature: str | None = None
+    signature_counts: dict[str, int] = field(default_factory=dict)
+    consecutive_text: int = 0
+
+
+@dataclass(frozen=True)
+class _ToolOutcome:
+    data: BaseModel
 
 
 class LLMClient:
@@ -180,13 +205,7 @@ class LLMClient:
                 terminal_tool=terminal_tool,
             )
 
-        steps = 0
-        requests = 0
-        tool_calls_used = 0
-        repairs = 0
-        last_signature: str | None = None
-        signature_counts: dict[str, int] = {}
-        consecutive_text = 0
+        state = _AgentState()
 
         def finish(result: AgentResult) -> AgentResult:
             if tracer is not None:
@@ -207,182 +226,57 @@ class LLMClient:
                     tool_definitions,
                     force_tool_call,
                     agent=agent,
-                    step=requests,
+                    step=state.requests,
                     reasoning_effort=reasoning_effort,
                 )
-                requests += 1
+                state.requests += 1
                 text = _message_text(message)
                 calls = _extract_tool_calls(message)
                 messages.append(_assistant_message(message, calls))
 
                 if not calls:
-                    if text_is_final:
+                    if not self._handle_text_reply(
+                        text,
+                        finish_reason,
+                        text_is_final=text_is_final,
+                        messages=messages,
+                        state=state,
+                        tracer=tracer,
+                        max_tool_calls=max_tool_calls,
+                        terminal_tool=terminal_tool,
+                        agent=agent,
+                    ):
                         return finish(AgentResult(text=text))
-                    if finish_reason == "length":
-                        raise AgentError(
-                            "budget",
-                            "model hit max_tokens="
-                            f"{self.config.max_tokens or 'the model default'} before calling "
-                            "a tool; this usually means a thinking loop. Raise max_tokens or "
-                            'set reasoning_effort = "none" for this agent.',
-                        )
-                    consecutive_text += 1
-                    steps += 1
-                    if tracer is not None:
-                        tracer.record(
-                            "text_reply",
-                            agent=agent,
-                            step=requests,
-                            consecutive=consecutive_text,
-                            text=text,
-                        )
-                    if steps > max_tool_calls:
-                        raise AgentError(
-                            "budget",
-                            "agent exceeded max_tool_calls="
-                            f"{max_tool_calls} without calling a tool",
-                        )
-                    if consecutive_text >= 2:
-                        raise AgentError(
-                            "no_tool_call",
-                            "model replied with text twice instead of calling "
-                            f"{terminal_tool or 'a tool'}; last text: {text!r}",
-                            last_text=text,
-                        )
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                "REMINDER from the khorek harness: you must respond with a "
-                                f"tool call to `{terminal_tool or 'a tool'}`. Do not answer with "
-                                "plain text."
-                            ),
-                        }
-                    )
                     continue
 
-                consecutive_text = 0
+                state.consecutive_text = 0
                 for call in calls:
                     signature = f"{call.name}:{_canonical_arguments(call.arguments)}"
-                    signature_counts[signature] = signature_counts.get(signature, 0) + 1
-                    if signature == last_signature or signature_counts[signature] >= 3:
+                    state.signature_counts[signature] = state.signature_counts.get(signature, 0) + 1
+                    if signature == state.last_signature or state.signature_counts[signature] >= 3:
                         raise AgentError(
                             "loop",
                             f"repeated tool call aborted the agent: {call.name}",
                         )
-                    last_signature = signature
+                    state.last_signature = signature
 
-                    try:
-                        arguments = _parse_arguments(call.arguments)
-                    except AgentError as exc:
-                        repairs = self._repair(
-                            messages, call, repairs, str(exc), available_tools, agent=agent
-                        )
+                    outcome = self._invoke_tool(
+                        messages,
+                        call,
+                        by_name.get(call.name),
+                        state=state,
+                        tracer=tracer,
+                        available_tools=available_tools,
+                        terminal_tool=terminal_tool,
+                        terminal_schema=terminal_schema,
+                        max_tool_calls=max_tool_calls,
+                        agent=agent,
+                    )
+                    if outcome is None:
                         continue
-
-                    tool = by_name.get(call.name)
-                    if tool is None:
-                        repairs = self._repair(
-                            messages,
-                            call,
-                            repairs,
-                            (
-                                f"unknown tool: {call.name!r}; this harness has no shell and no "
-                                f"other tools. Available tools: {', '.join(available_tools)}"
-                            ),
-                            available_tools,
-                            agent=agent,
-                        )
-                        continue
-
-                    if terminal_tool is not None and call.name == terminal_tool:
-                        assert terminal_schema is not None
-                        try:
-                            data = terminal_schema.model_validate(arguments)
-                        except ValidationError as exc:
-                            repairs = self._repair(
-                                messages,
-                                call,
-                                repairs,
-                                _format_validation(exc),
-                                available_tools,
-                                agent=agent,
-                            )
-                            continue
-                        if tracer is not None:
-                            tracer.tool_call(
-                                agent=agent,
-                                step=requests,
-                                call=_call_dict(call),
-                                result=data.model_dump(),
-                            )
-                        return finish(AgentResult(data=data))
-
-                    if tool.handler is None:
-                        repairs = self._repair(
-                            messages,
-                            call,
-                            repairs,
-                            f"tool {call.name} has no handler",
-                            available_tools,
-                            agent=agent,
-                        )
-                        continue
-
-                    if steps >= max_tool_calls:
-                        raise AgentError(
-                            "budget",
-                            f"agent exceeded max_tool_calls={max_tool_calls}",
-                        )
-                    steps += 1
-
-                    tool_started = time.monotonic()
-                    try:
-                        result = tool.handler(arguments)
-                    except ToolValidationError as exc:
-                        self._trace_tool_error(
-                            tracer, agent, requests, call, str(exc), tool_started
-                        )
-                        repairs = self._repair(
-                            messages, call, repairs, str(exc), available_tools, agent=agent
-                        )
-                        continue
-                    except AgentError:
-                        raise
-                    except Exception as exc:  # noqa: BLE001 - tool failures are agent failures
-                        self._trace_tool_error(
-                            tracer, agent, requests, call, str(exc), tool_started
-                        )
-                        raise AgentError("schema", f"tool {call.name} failed: {exc}") from exc
-
-                    if not isinstance(result, dict):
-                        raise AgentError(
-                            "schema",
-                            f"tool {call.name} returned {type(result).__name__}; "
-                            "every tool handler must return a dict",
-                        )
-                    tool_calls_used += 1
-                    result = {
-                        **result,
-                        "note": (
-                            f"[tool calls {tool_calls_used}/{max_tool_calls} "
-                            f"– {max_tool_calls - tool_calls_used} left]"
-                        ),
-                    }
-                    try:
-                        content = json.dumps(result, ensure_ascii=False)
-                    except (TypeError, ValueError) as exc:
-                        raise AgentError(
-                            "schema", f"tool {call.name} returned non-JSON data: {exc}"
-                        ) from exc
-                    if tracer is not None:
-                        tracer.tool_call(
-                            agent=agent,
-                            step=requests,
-                            call=_call_dict(call),
-                            result=_json_or_text(result),
-                            duration_ms=_elapsed_ms(tool_started),
-                        )
+                    if isinstance(outcome, _ToolOutcome):
+                        return finish(AgentResult(data=outcome.data))
+                    content, state.tool_calls_used = outcome
                     messages.append(
                         {"role": "tool", "tool_call_id": call.call_id, "content": content}
                     )
@@ -399,6 +293,185 @@ class LLMClient:
                     duration_ms=_elapsed_ms(started),
                 )
             raise
+
+    def _handle_text_reply(
+        self,
+        text: str,
+        finish_reason: str | None,
+        *,
+        text_is_final: bool,
+        messages: list[dict[str, Any]],
+        state: _AgentState,
+        tracer: TraceRecorder | None,
+        max_tool_calls: int,
+        terminal_tool: str | None,
+        agent: str,
+    ) -> bool:
+        """True when a nudge was appended; False when text is the final result."""
+        if text_is_final:
+            return False
+        if finish_reason == "length":
+            raise AgentError(
+                "budget",
+                "model hit max_tokens="
+                f"{self.config.max_tokens or 'the model default'} before calling "
+                "a tool; this usually means a thinking loop. Raise max_tokens or "
+                'set reasoning_effort = "none" for this agent.',
+            )
+        state.consecutive_text += 1
+        state.steps += 1
+        if tracer is not None:
+            tracer.record(
+                "text_reply",
+                agent=agent,
+                step=state.requests,
+                consecutive=state.consecutive_text,
+                text=text,
+            )
+        if state.steps > max_tool_calls:
+            raise AgentError(
+                "budget",
+                f"agent exceeded max_tool_calls={max_tool_calls} without calling a tool",
+            )
+        if state.consecutive_text >= 2:
+            raise AgentError(
+                "no_tool_call",
+                "model replied with text twice instead of calling "
+                f"{terminal_tool or 'a tool'}; last text: {text!r}",
+                last_text=text,
+            )
+        messages.append(
+            {
+                "role": "user",
+                "content": (
+                    "REMINDER from the khorek harness: you must respond with a "
+                    f"tool call to `{terminal_tool or 'a tool'}`. Do not answer with "
+                    "plain text."
+                ),
+            }
+        )
+        return True
+
+    def _invoke_tool(
+        self,
+        messages: list[dict[str, Any]],
+        call: _ToolCall,
+        tool: Tool | None,
+        *,
+        state: _AgentState,
+        tracer: TraceRecorder | None,
+        available_tools: list[str],
+        terminal_tool: str | None,
+        terminal_schema: type[BaseModel] | None,
+        max_tool_calls: int,
+        agent: str,
+    ) -> tuple[str, int] | _ToolOutcome | None:
+        """Run one call; None signals repair, and _ToolOutcome signals terminal data."""
+        try:
+            arguments = _parse_arguments(call.arguments)
+        except AgentError as exc:
+            state.repairs = self._repair(
+                messages, call, state.repairs, str(exc), available_tools, agent=agent
+            )
+            return None
+
+        if tool is None:
+            state.repairs = self._repair(
+                messages,
+                call,
+                state.repairs,
+                (
+                    f"unknown tool: {call.name!r}; this harness has no shell and no "
+                    f"other tools. Available tools: {', '.join(available_tools)}"
+                ),
+                available_tools,
+                agent=agent,
+            )
+            return None
+
+        if terminal_tool is not None and call.name == terminal_tool:
+            assert terminal_schema is not None
+            try:
+                data = terminal_schema.model_validate(arguments)
+            except ValidationError as exc:
+                state.repairs = self._repair(
+                    messages,
+                    call,
+                    state.repairs,
+                    _format_validation(exc),
+                    available_tools,
+                    agent=agent,
+                )
+                return None
+            if tracer is not None:
+                tracer.tool_call(
+                    agent=agent,
+                    step=state.requests,
+                    call=_call_dict(call),
+                    result=data.model_dump(),
+                )
+            return _ToolOutcome(data=data)
+
+        if tool.handler is None:
+            state.repairs = self._repair(
+                messages,
+                call,
+                state.repairs,
+                f"tool {call.name} has no handler",
+                available_tools,
+                agent=agent,
+            )
+            return None
+
+        if state.steps >= max_tool_calls:
+            raise AgentError(
+                "budget",
+                f"agent exceeded max_tool_calls={max_tool_calls}",
+            )
+        state.steps += 1
+
+        tool_started = time.monotonic()
+        try:
+            result = tool.handler(arguments)
+        except ToolValidationError as exc:
+            self._trace_tool_error(tracer, agent, state.requests, call, str(exc), tool_started)
+            state.repairs = self._repair(
+                messages, call, state.repairs, str(exc), available_tools, agent=agent
+            )
+            return None
+        except AgentError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - tool failures are agent failures
+            self._trace_tool_error(tracer, agent, state.requests, call, str(exc), tool_started)
+            raise AgentError("schema", f"tool {call.name} failed: {exc}") from exc
+
+        if not isinstance(result, dict):
+            raise AgentError(
+                "schema",
+                f"tool {call.name} returned {type(result).__name__}; "
+                "every tool handler must return a dict",
+            )
+        state.tool_calls_used += 1
+        result = {
+            **result,
+            "note": (
+                f"[tool calls {state.tool_calls_used}/{max_tool_calls} "
+                f"– {max_tool_calls - state.tool_calls_used} left]"
+            ),
+        }
+        try:
+            content = json.dumps(result, ensure_ascii=False)
+        except (TypeError, ValueError) as exc:
+            raise AgentError("schema", f"tool {call.name} returned non-JSON data: {exc}") from exc
+        if tracer is not None:
+            tracer.tool_call(
+                agent=agent,
+                step=state.requests,
+                call=_call_dict(call),
+                result=_json_or_text(result),
+                duration_ms=_elapsed_ms(tool_started),
+            )
+        return content, state.tool_calls_used
 
     @staticmethod
     def _trace_tool_error(
@@ -485,89 +558,85 @@ class LLMClient:
         if effective:
             payload["reasoning_effort"] = effective
 
-        url = f"{self._base_url}/chat/completions"
         tracer = self.tracer
+
+        def record_error(
+            code: str,
+            message: str,
+            *,
+            status: int | None = None,
+            duration_ms: int | None = None,
+            response: dict[str, Any] | str | None = None,
+        ) -> None:
+            if tracer is None:
+                return
+            tracer.model_call(
+                agent=agent,
+                step=step,
+                request=payload,
+                response=response,
+                status=status,
+                duration_ms=duration_ms,
+                error={"code": code, "message": message},
+            )
+
+        url = f"{self._base_url}/chat/completions"
         started = time.monotonic()
         try:
             response = self._client.post(url, json=payload, timeout=self.config.call_timeout)
         except httpx.TimeoutException as exc:
-            if tracer is not None:
-                tracer.model_call(
-                    agent=agent,
-                    step=step,
-                    request=payload,
-                    duration_ms=_elapsed_ms(started),
-                    error={"code": "timeout", "message": f"model call timed out: {url}"},
-                )
+            record_error(
+                "timeout", f"model call timed out: {url}", duration_ms=_elapsed_ms(started)
+            )
             raise AgentError("timeout", f"model call timed out: {url}") from exc
         except httpx.HTTPError as exc:
-            if tracer is not None:
-                tracer.model_call(
-                    agent=agent,
-                    step=step,
-                    request=payload,
-                    duration_ms=_elapsed_ms(started),
-                    error={"code": "http", "message": f"model call failed ({url}): {exc}"},
-                )
+            record_error(
+                "http", f"model call failed ({url}): {exc}", duration_ms=_elapsed_ms(started)
+            )
             raise AgentError("http", f"model call failed ({url}): {exc}") from exc
 
         duration_ms = _elapsed_ms(started)
         raw_text = response.text
         if not response.is_success:
             body = raw_text[:500]
-            if tracer is not None:
-                tracer.model_call(
-                    agent=agent,
-                    step=step,
-                    request=payload,
-                    response=raw_text,
-                    status=response.status_code,
-                    duration_ms=duration_ms,
-                    error={
-                        "code": "http",
-                        "message": f"model returned HTTP {response.status_code}: {body}",
-                    },
-                )
+            record_error(
+                "http",
+                f"model returned HTTP {response.status_code}: {body}",
+                response=raw_text,
+                status=response.status_code,
+                duration_ms=duration_ms,
+            )
             raise AgentError("http", f"model returned HTTP {response.status_code}: {body}")
         try:
             data = response.json()
         except ValueError as exc:
-            if tracer is not None:
-                tracer.model_call(
-                    agent=agent,
-                    step=step,
-                    request=payload,
-                    response=raw_text,
-                    status=response.status_code,
-                    duration_ms=duration_ms,
-                    error={"code": "http", "message": "model returned non-JSON response"},
-                )
+            record_error(
+                "http",
+                "model returned non-JSON response",
+                response=raw_text,
+                status=response.status_code,
+                duration_ms=duration_ms,
+            )
             raise AgentError("http", "model returned non-JSON response") from exc
         choices = data.get("choices") if isinstance(data, dict) else None
         if not isinstance(choices, list) or not choices:
-            if tracer is not None:
-                tracer.model_call(
-                    agent=agent,
-                    step=step,
-                    request=payload,
-                    response=raw_text,
-                    status=response.status_code,
-                    duration_ms=duration_ms,
-                    error={"code": "http", "message": "model response has no choices"},
-                )
+            record_error(
+                "http",
+                "model response has no choices",
+                response=raw_text,
+                status=response.status_code,
+                duration_ms=duration_ms,
+            )
             raise AgentError("http", "model response has no choices")
         message = choices[0].get("message") if isinstance(choices[0], dict) else None
         if not isinstance(message, dict):
-            if tracer is not None:
-                tracer.model_call(
-                    agent=agent,
-                    step=step,
-                    request=payload,
-                    response=raw_text,
-                    status=response.status_code,
-                    duration_ms=duration_ms,
-                    error={"code": "http", "message": "model response has no message"},
-                )
+            record_error(
+                "http",
+                "model response has no message",
+                response=raw_text,
+                status=response.status_code,
+                duration_ms=duration_ms,
+            )
             raise AgentError("http", "model response has no message")
         if tracer is not None:
             usage = data.get("usage") if isinstance(data, dict) else None

@@ -21,7 +21,7 @@ from khorek.files import PathEscapeError
 
 
 @dataclass(frozen=True)
-class _Snapshot:
+class Snapshot:
     """The original state of one captured path."""
 
     path: Path
@@ -29,13 +29,7 @@ class _Snapshot:
     original: bytes | None
 
 
-@dataclass(frozen=True)
-class FileChange:
-    """A captured path whose current state differs from the original."""
-
-    path: Path
-    existed: bool
-    original: bytes | None
+FileChange = Snapshot  # keep the public alias
 
 
 class Snapshotter:
@@ -43,8 +37,8 @@ class Snapshotter:
 
     def __init__(self, project_root: Path) -> None:
         self.project_root = Path(os.path.realpath(project_root))
-        self._snapshots: list[_Snapshot] = []
-        self._by_path: dict[Path, _Snapshot] = {}
+        self._snapshots: list[Snapshot] = []
+        self._by_path: dict[Path, Snapshot] = {}
 
     def _canonical(self, path: Path) -> Path:
         """Resolve *path* to a real absolute path inside the project root."""
@@ -64,9 +58,9 @@ class Snapshotter:
         if canonical in self._by_path:
             return
         if canonical.exists():
-            snapshot = _Snapshot(path=canonical, existed=True, original=canonical.read_bytes())
+            snapshot = Snapshot(path=canonical, existed=True, original=canonical.read_bytes())
         else:
-            snapshot = _Snapshot(path=canonical, existed=False, original=None)
+            snapshot = Snapshot(path=canonical, existed=False, original=None)
         self._by_path[canonical] = snapshot
         self._snapshots.append(snapshot)
 
@@ -87,27 +81,17 @@ class Snapshotter:
         """Return ``True`` when any captured path differs from its original."""
         return bool(self.changes())
 
-    def changes(self) -> list[FileChange]:
+    def changes(self) -> list[Snapshot]:
         """Return the captured paths whose current state differs from the original.
 
         A captured path is *changed* when it existed and its bytes now differ
         (an unreadable path counts as changed), or when it did not exist and the
         path now exists or is a symlink.
         """
-        changed: list[FileChange] = []
-        for snapshot in self._snapshots:
-            if self._is_changed(snapshot):
-                changed.append(
-                    FileChange(
-                        path=snapshot.path,
-                        existed=snapshot.existed,
-                        original=snapshot.original,
-                    )
-                )
-        return changed
+        return [s for s in self._snapshots if self._is_changed(s)]
 
     @staticmethod
-    def _is_changed(snapshot: _Snapshot) -> bool:
+    def _is_changed(snapshot: Snapshot) -> bool:
         if snapshot.existed:
             assert snapshot.original is not None
             try:

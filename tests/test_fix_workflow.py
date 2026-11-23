@@ -7,6 +7,7 @@ from pathlib import Path
 from khorek.db import Database
 from khorek.files import sha256_file
 from khorek.trace import TraceStore
+from khorek.workflows import fix as fix_workflow
 from khorek.workflows.fix import build_queue
 from tests.conftest import (
     FakeModel,
@@ -834,6 +835,102 @@ def test_one_failed_issue_does_not_abort_the_run(tmp_path: Path, capsys) -> None
     assert "1 failed" in output
     assert "1 open issues" in output
     assert first != second
+
+
+def test_failed_round_state_is_reset_before_next_issue(tmp_path: Path, monkeypatch) -> None:
+    project = make_project(
+        tmp_path / "project",
+        files={"src/a.py": "alpha = 1\nbeta = 1\n"},
+        verify=TRUE_VERIFY,
+    )
+    seed_state(project, outcome="issues")
+    first = seed_issue(project, description="alpha is wrong", line_start=1, line_end=1)
+    seed_issue(project, description="beta is wrong", line_start=2, line_end=2)
+
+    first_failure: dict[str, object] = {}
+    second_start: dict[str, object] = {}
+    original_select = fix_workflow._FixWorkflow._select
+    original_fail = fix_workflow._FixWorkflow._fail
+
+    def observe_select(self, current_state):
+        if current_state.index == 1:
+            second_start.update(
+                {
+                    key: getattr(current_state, key)
+                    for key in (
+                        "current",
+                        "snapshotter",
+                        "pre_fix_sha",
+                        "content",
+                        "new_sha",
+                        "rounds",
+                        "previous_failure",
+                        "previous_source",
+                        "verified",
+                        "fix_fixed",
+                        "fix_summary",
+                        "fix_error",
+                        "last_error",
+                        "handoffs",
+                        "review_approved",
+                        "review_summary",
+                        "review_error",
+                    )
+                }
+            )
+        return original_select(self, current_state)
+
+    def observe_fail(self, current_state):
+        if current_state.current is not None and current_state.current.id == first:
+            first_failure.update(
+                {
+                    "previous_failure": current_state.previous_failure,
+                    "rounds": current_state.rounds,
+                    "handoffs": current_state.handoffs,
+                }
+            )
+        return original_fail(self, current_state)
+
+    monkeypatch.setattr(fix_workflow._FixWorkflow, "_select", observe_select)
+    monkeypatch.setattr(fix_workflow._FixWorkflow, "_fail", observe_fail)
+
+    fake = FakeModel(
+        [
+            edit("alpha = 1", "alpha = 2"),
+            fix_report("first attempt"),
+            review(False, "first rejection"),
+            edit("alpha = 2", "alpha = 3"),
+            fix_report("second attempt"),
+            review(False, "second rejection"),
+            fix_report("cannot fix beta", fixed=False),
+        ]
+    )
+    assert run_cli(fake, *fix_args(project)) == 1
+
+    assert first_failure == {
+        "previous_failure": "second rejection",
+        "rounds": 2,
+        "handoffs": 2,
+    }
+    assert second_start == {
+        "current": None,
+        "snapshotter": None,
+        "pre_fix_sha": "",
+        "content": "",
+        "new_sha": "",
+        "rounds": 0,
+        "previous_failure": None,
+        "previous_source": None,
+        "verified": False,
+        "fix_fixed": False,
+        "fix_summary": "",
+        "fix_error": None,
+        "last_error": None,
+        "handoffs": 0,
+        "review_approved": False,
+        "review_summary": "",
+        "review_error": None,
+    }
 
 
 def test_review_rejection_feeds_reason_back_and_retries(tmp_path: Path, capsys) -> None:

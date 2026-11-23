@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from khorek.agents.aspect import IssueReport, ReportedIssue, report_issues_parameters
+from khorek.agents.aspect import IssueReport, ReportedIssue, report_issues_tool
 from khorek.config import load_config
 from khorek.context import AppContext
 from khorek.db import Database
@@ -76,6 +76,22 @@ def test_skip_on_open_issues_does_not_duplicate(project) -> None:
     assert run_cli(fake, *explore_args(project)) == 0
     assert fake.chat_calls == 1
     assert len(issues(project)) == 1
+
+
+def test_pair_at_current_sha_skips_without_calling_llm(project, capsys) -> None:
+    current_sha = sha256_file(project.root / "src/a.py")
+    with Database(project.db_path, project.root) as db:
+        db.upsert_state("comments", "src/a.py", current_sha, "clean")
+
+    fake = FakeModel([])
+    assert run_cli(fake, *explore_args(project)) == 0
+    assert fake.chat_calls == 0
+    row = state(project)
+    assert row is not None
+    assert row.sha256 == current_sha
+    assert row.outcome == "clean"
+    assert issues(project) == []
+    assert "skipped (clean)" in capsys.readouterr().out
 
 
 def test_re_explores_when_state_row_is_absent(project) -> None:
@@ -435,7 +451,7 @@ def test_limit_is_cumulative_across_pairs(tmp_path: Path, capsys) -> None:
 
 
 def test_report_issues_schema_is_flat_and_requires_all_fields() -> None:
-    schema = report_issues_parameters()
+    schema = report_issues_tool().parameters
     rendered = json.dumps(schema)
     assert "$defs" not in schema
     assert "$ref" not in rendered

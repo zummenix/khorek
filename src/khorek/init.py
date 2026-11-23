@@ -6,14 +6,14 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from pydantic import BaseModel
+
 from khorek.config import (
-    DEFAULT_CALL_TIMEOUT,
     DEFAULT_MAX_ISSUES_PER_FILE,
-    DEFAULT_MAX_TOKENS,
-    DEFAULT_TEMPERATURE,
     DEFAULT_VERIFY_TIMEOUT,
     AgentsConfig,
     DefaultsConfig,
+    LLMConfig,
     ObserveConfig,
 )
 
@@ -44,6 +44,16 @@ class InitAnswers:
     model: str
     verify_cmd: str
     aspect: AspectDraft | None
+
+
+@dataclass(frozen=True)
+class Section:
+    """One model-backed TOML section and its rendering exceptions."""
+
+    header: str
+    config: BaseModel
+    omitted_fields: frozenset[str] = frozenset()
+    commented_fields: frozenset[str] = frozenset()
 
 
 ASPECT_LIBRARY: tuple[AspectDraft, ...] = (
@@ -155,50 +165,52 @@ def _commented(key: str, default: object) -> str:
 
 def render_init_config(answers: InitAnswers) -> str:
     """Render the canonical ``khorek.toml`` text for the collected answers."""
-    defaults = DefaultsConfig()
-    observe = ObserveConfig()
     agents = AgentsConfig()
+    sections = (
+        Section(
+            "[llm]",
+            LLMConfig(base_url=answers.base_url, model=answers.model),
+            commented_fields=frozenset(
+                {"temperature", "call_timeout", "max_tokens", "reasoning_effort"}
+            ),
+        ),
+        Section("[defaults]", DefaultsConfig()),
+        Section("[observe]", ObserveConfig()),
+        Section(
+            "[agents.aspect]",
+            agents.aspect,
+            omitted_fields=frozenset({"reasoning_effort"}),
+        ),
+        Section(
+            "[agents.explorer]",
+            agents.explorer,
+            omitted_fields=frozenset({"reasoning_effort"}),
+        ),
+        Section(
+            "[agents.fixer]",
+            agents.fixer,
+            omitted_fields=frozenset({"reasoning_effort"}),
+        ),
+        Section(
+            "[agents.reviewer]",
+            agents.reviewer,
+            omitted_fields=frozenset({"reasoning_effort"}),
+        ),
+    )
 
-    lines: list[str] = ["[llm]"]
-    lines.append(f"base_url = {_toml_string(answers.base_url)}")
-    lines.append(f"model = {_toml_string(answers.model)}")
-    lines.append(_commented("temperature", DEFAULT_TEMPERATURE))
-    lines.append(_commented("call_timeout", DEFAULT_CALL_TIMEOUT))
-    lines.append(_commented("max_tokens", DEFAULT_MAX_TOKENS))
-    lines.append(_commented("reasoning_effort", None))
-
-    lines.append("")
-    lines.append("[defaults]")
-    lines.append(f"max_issues_per_file = {defaults.max_issues_per_file}")
-    lines.append(f"max_file_bytes = {defaults.max_file_bytes}")
-    lines.append(f"max_prompt_bytes = {defaults.max_prompt_bytes}")
-    lines.append(f"max_tool_output_bytes = {defaults.max_tool_output_bytes}")
-    lines.append(f"max_cycles = {defaults.max_cycles}")
-
-    lines.append("")
-    lines.append("[observe]")
-    lines.append(f"enabled = {str(observe.enabled).lower()}")
-    lines.append(f"directory = {_toml_string(observe.directory)}")
-    lines.append(f"keep_runs = {observe.keep_runs}")
-
-    lines.append("")
-    lines.append("[agents.aspect]")
-    lines.append(f"max_handoffs = {agents.aspect.max_handoffs}")
-    lines.append(f"max_tool_calls = {agents.aspect.max_tool_calls}")
-
-    lines.append("")
-    lines.append("[agents.explorer]")
-    lines.append(f"max_tool_calls = {agents.explorer.max_tool_calls}")
-
-    lines.append("")
-    lines.append("[agents.fixer]")
-    lines.append(f"max_attempts = {agents.fixer.max_attempts}")
-    lines.append(f"max_tool_calls = {agents.fixer.max_tool_calls}")
-
-    lines.append("")
-    lines.append("[agents.reviewer]")
-    lines.append(f"max_handoffs = {agents.reviewer.max_handoffs}")
-    lines.append(f"max_tool_calls = {agents.reviewer.max_tool_calls}")
+    lines: list[str] = []
+    for section in sections:
+        if lines:
+            lines.append("")
+        lines.append(section.header)
+        for key in type(section.config).model_fields:
+            if key in section.omitted_fields:
+                continue
+            value = getattr(section.config, key)
+            if key in section.commented_fields:
+                lines.append(_commented(key, value))
+            else:
+                lines.append(f"{key} = {_toml_value(value)}")
 
     lines.append("")
     lines.append("[[verify]]")

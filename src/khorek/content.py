@@ -1,15 +1,29 @@
 """Formatting helpers for presenting file contents to an LLM.
 
-The one public helper, :func:`format_file_lines`, renders a slice of a file's
-text as a numbered excerpt.  With ``header=True`` (the default) it is wrapped
-in a dashed rule and gets a footer when the file is cut short, which is what
-the prompt builders use; with ``header=False`` it renders the numbered lines
-only, leaving the framing to the tool that returns them.  It is the
-presentation layer for excerpts; the file reading itself stays in
-:mod:`khorek.files`.
+The public helper :func:`format_file_lines` renders a slice of a file's text
+as a numbered excerpt.  With ``header=True`` (the default) it is wrapped in a
+dashed rule and gets a footer when the file is cut short, which is what the
+prompt builders use; with ``header=False`` it renders the numbered lines only,
+leaving the framing to the tool that returns them.  :func:`line_count` and
+:func:`indent_block` provide shared text helpers.  This is the presentation
+layer for excerpts; the file reading itself stays in :mod:`khorek.files`.
 """
 
 from __future__ import annotations
+
+
+def line_count(text: str) -> int:
+    """Return the number of lines in *text*, with a minimum of one."""
+    return max(1, len(text.splitlines()))
+
+
+def indent_block(text: str, width: int = 4) -> list[str]:
+    """Indent each non-blank line after stripping its surrounding whitespace."""
+    lines: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        lines.append(f"{' ' * width}{stripped}" if stripped else "")
+    return lines
 
 
 def format_file_lines(
@@ -78,4 +92,4 @@ def format_file_lines(
     return "\n".join(parts) + "\n"
 
 
-__all__ = ["format_file_lines"]
+__all__ = ["format_file_lines", "indent_block", "line_count"]

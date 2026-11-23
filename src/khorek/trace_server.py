@@ -373,51 +373,59 @@ def make_handler(store: TraceStore) -> type[BaseHTTPRequestHandler]:
             if store.run_dir(run_id) is None:
                 _error(self, HTTPStatus.NOT_FOUND, f"unknown run: {run_id}")
                 return
-            if len(segments) == 3:
-                for run in store.list_runs():
-                    if run.id == run_id:
-                        _json_response(self, run.as_dict())
-                        return
-                _error(self, HTTPStatus.NOT_FOUND, f"unknown run: {run_id}")
-                return
-            if segments[3] == "events":
-                if len(segments) >= 5 and segments[4].isdigit():
-                    seq = int(segments[4])
-                    for event in store.events(run_id):
-                        if int(event.get("seq", 0)) == seq:
-                            _json_response(self, event)
-                            return
-                    _error(self, HTTPStatus.NOT_FOUND, f"unknown event: {seq}")
+
+            match segments[3:]:
+                case []:
+                    self._run_meta(run_id)
+                case ["events"]:
+                    self._run_events(run_id, query)
+                case ["events", seq] if seq.isdigit():
+                    self._run_event(run_id, int(seq))
+                case ["raw"]:
+                    self._run_raw(run_id)
+                case _:
+                    _error(self, HTTPStatus.NOT_FOUND, f"not found: {path}")
+
+        def _run_meta(self, run_id: str) -> None:
+            for run in store.list_runs():
+                if run.id == run_id:
+                    _json_response(self, run.as_dict())
                     return
-                since_raw = query.get("since", ["0"])[0]
-                try:
-                    since = int(since_raw)
-                except ValueError:
-                    since = 0
-                events = store.events_since(run_id, since) if since else store.events(run_id)
-                _json_response(
-                    self,
-                    {"run_id": run_id, "since": since, "events": events},
-                )
-                return
-            if segments[3] == "raw":
-                directory = store.run_dir(run_id)
-                assert directory is not None
-                try:
-                    body = (directory / "events.jsonl").read_bytes()
-                except OSError:
-                    _error(self, HTTPStatus.NOT_FOUND, "no events file")
+            _error(self, HTTPStatus.NOT_FOUND, f"unknown run: {run_id}")
+
+        def _run_events(self, run_id: str, query: dict[str, list[str]]) -> None:
+            since_raw = query.get("since", ["0"])[0]
+            try:
+                since = int(since_raw)
+            except ValueError:
+                since = 0
+            events = store.events_since(run_id, since) if since else store.events(run_id)
+            _json_response(
+                self,
+                {"run_id": run_id, "since": since, "events": events},
+            )
+
+        def _run_event(self, run_id: str, seq: int) -> None:
+            for event in store.events(run_id):
+                if int(event.get("seq", 0)) == seq:
+                    _json_response(self, event)
                     return
-                self.send_response(HTTPStatus.OK)
-                self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
-                self.send_header("Content-Length", str(len(body)))
-                self.send_header(
-                    "Content-Disposition", f'attachment; filename="{run_id}.events.jsonl"'
-                )
-                self.end_headers()
-                self.wfile.write(body)
+            _error(self, HTTPStatus.NOT_FOUND, f"unknown event: {seq}")
+
+        def _run_raw(self, run_id: str) -> None:
+            directory = store.run_dir(run_id)
+            assert directory is not None
+            try:
+                body = (directory / "events.jsonl").read_bytes()
+            except OSError:
+                _error(self, HTTPStatus.NOT_FOUND, "no events file")
                 return
-            _error(self, HTTPStatus.NOT_FOUND, f"not found: {path}")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Content-Disposition", f'attachment; filename="{run_id}.events.jsonl"')
+            self.end_headers()
+            self.wfile.write(body)
 
     return TraceHandler
 

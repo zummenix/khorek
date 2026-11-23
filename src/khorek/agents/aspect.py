@@ -4,14 +4,15 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from khorek.agents.explorer import ExplorerAgent, ask_explorer_tool
+from khorek.agents.schema import terminal_tool
 from khorek.agents.tools import read_only_tools
 from khorek.config import AspectAgentConfig, AspectConfig, DefaultsConfig
-from khorek.content import format_file_lines
+from khorek.content import format_file_lines, line_count
 from khorek.db import Issue
 from khorek.llm import LLMClient, Tool
 from khorek.prompts import default_prompt
@@ -91,76 +92,31 @@ class RevalidationReport(BaseModel):
     results: list[RevalidationVerdict]
 
 
-def _inline_refs(node: Any, defs: dict[str, Any]) -> Any:
-    """Inline JSON-schema ``$ref``s.
-
-    Pydantic nests named models under ``$defs`` and refers to them with
-    ``$ref``.  Small local models (the prototype target) often mishandle that.
-    Inlining keeps the exact field/enum constraints in a flat schema the model
-    can follow.
-    """
-    if isinstance(node, dict):
-        if "$ref" in node:
-            reference = str(node["$ref"])
-            name = reference.rsplit("/", 1)[-1]
-            resolved = dict(defs.get(name, {}))
-            resolved.update({key: value for key, value in node.items() if key != "$ref"})
-            return _inline_refs(resolved, defs)
-        return {key: _inline_refs(value, defs) for key, value in node.items() if key != "$defs"}
-    if isinstance(node, list):
-        return [_inline_refs(item, defs) for item in node]
-    return node
-
-
-def report_issues_parameters() -> dict[str, Any]:
-    """Flat JSON schema for the terminal ``report_issues`` tool."""
-    schema = IssueReport.model_json_schema()
-    definitions = schema.get("$defs", {})
-    if not isinstance(definitions, dict):
-        definitions = {}
-    flattened = _inline_refs(schema, definitions)
-    assert isinstance(flattened, dict)
-    return flattened
-
-
 def report_issues_tool() -> Tool:
     """Create the terminal ``report_issues`` tool definition."""
-    return Tool(
-        name="report_issues",
-        description=(
+    return terminal_tool(
+        "report_issues",
+        (
             "Report the issues found for this aspect and file, most important "
             "first. An empty list means the file is clean for this aspect. "
             "This must be your final call."
         ),
-        parameters=report_issues_parameters(),
-        handler=None,
+        IssueReport,
     )
-
-
-def report_revalidation_parameters() -> dict[str, Any]:
-    """Flat JSON schema for the terminal ``report_revalidation`` tool."""
-    schema = RevalidationReport.model_json_schema()
-    definitions = schema.get("$defs", {})
-    if not isinstance(definitions, dict):
-        definitions = {}
-    flattened = _inline_refs(schema, definitions)
-    assert isinstance(flattened, dict)
-    return flattened
 
 
 def report_revalidation_tool() -> Tool:
     """Create the terminal ``report_revalidation`` tool definition."""
-    return Tool(
-        name="report_revalidation",
-        description=(
+    return terminal_tool(
+        "report_revalidation",
+        (
             "Report a verdict for each open issue you were given, keyed by its "
             "database id. Use status 'valid' (with refreshed line_start/line_end) "
             "when the issue survives, 'gone' (with a concrete reason) when the "
             "fix resolved it, or 'uncertain' when you cannot tell. This must be "
             "your final call."
         ),
-        parameters=report_revalidation_parameters(),
-        handler=None,
+        RevalidationReport,
     )
 
 
@@ -204,7 +160,7 @@ class AspectAgent:
             "Report your findings for this aspect with report_issues. If there is "
             "nothing to report, call it with an empty list for the `issues` argument."
         )
-        result = self._client.run_agent(
+        return self._client.run_agent(
             system_prompt=self._system_prompt,
             user_prompt=user_prompt,
             tools=tools,
@@ -215,11 +171,7 @@ class AspectAgent:
             terminal_schema=IssueReport,
             agent=f"aspect:{aspect.id}:{path}",
             reasoning_effort=self._config.reasoning_effort,
-        )
-        data = result.data
-        if not isinstance(data, IssueReport):
-            raise TypeError("report_issues did not return an IssueReport")
-        return data
+        ).data_of(IssueReport)
 
     def revalidate(
         self,
@@ -241,7 +193,7 @@ class AspectAgent:
             report_revalidation_tool(),
         ]
         user_prompt = _revalidate_user_prompt(aspect, path, content, issues)
-        result = self._client.run_agent(
+        return self._client.run_agent(
             system_prompt=self._revalidate_prompt,
             user_prompt=user_prompt,
             tools=tools,
@@ -252,11 +204,7 @@ class AspectAgent:
             terminal_schema=RevalidationReport,
             agent=f"aspect:{aspect.id}:{path}:revalidate",
             reasoning_effort=self._config.reasoning_effort,
-        )
-        data = result.data
-        if not isinstance(data, RevalidationReport):
-            raise TypeError("report_revalidation did not return a RevalidationReport")
-        return data
+        ).data_of(RevalidationReport)
 
 
 def _revalidate_user_prompt(
@@ -266,7 +214,7 @@ def _revalidate_user_prompt(
     issues: Sequence[Issue],
 ) -> str:
     """Build the revalidation user prompt: task, current file, and open issues."""
-    count = max(1, len(content.splitlines()))
+    count = line_count(content)
     issue_lines = [
         f"#{issue.id}: lines {issue.line_start}-{issue.line_end}: {issue.description.strip()}"
         for issue in issues
@@ -295,8 +243,6 @@ __all__ = [
     "RevalidationStatus",
     "RevalidationVerdict",
     "Severity",
-    "report_issues_parameters",
     "report_issues_tool",
-    "report_revalidation_parameters",
     "report_revalidation_tool",
 ]
