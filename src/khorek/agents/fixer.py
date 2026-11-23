@@ -18,6 +18,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
+from khorek.agents.schema import terminal_tool
 from khorek.agents.tools import fit_result, read_file_tool
 from khorek.config import DefaultsConfig, FixerAgentConfig
 from khorek.content import format_file_lines
@@ -208,15 +209,14 @@ def write_file_tool(root: Path, snapshotter: Snapshotter, max_tool_output_bytes:
 
 def report_fix_result_tool() -> Tool:
     """The terminal ``report_fix_result`` tool."""
-    return Tool(
-        name="report_fix_result",
-        description=(
+    return terminal_tool(
+        "report_fix_result",
+        (
             "Report the outcome for this issue. Call with fixed=true only after "
             "you actually changed the file; the harness verifies the change and "
             "runs the configured checks. This must be your final call."
         ),
-        parameters=FixReport.model_json_schema(),
-        handler=None,
+        FixReport,
     )
 
 

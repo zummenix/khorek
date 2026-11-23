@@ -16,6 +16,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
 
+from khorek.agents.schema import terminal_tool
 from khorek.agents.tools import read_only_tools
 from khorek.config import DefaultsConfig, ReviewerAgentConfig
 from khorek.db import Issue
@@ -44,9 +45,9 @@ class ReviewOutcome:
 
 def report_review_tool() -> Tool:
     """The terminal ``report_review`` tool."""
-    return Tool(
-        name="report_review",
-        description=(
+    return terminal_tool(
+        "report_review",
+        (
             "Report your verdict on the fixer's change. Call with approved=true "
             "only when the diff correctly and minimally resolves the stated "
             "issue; with approved=false when it does not actually address the "
@@ -55,8 +56,7 @@ def report_review_tool() -> Tool:
             "concrete, actionable reason on rejection that is handed straight "
             "back to the fixer. This must be your final call."
         ),
-        parameters=ReviewReport.model_json_schema(),
-        handler=None,
+        ReviewReport,
     )
 
 

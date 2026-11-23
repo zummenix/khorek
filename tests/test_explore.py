@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from khorek.agents.aspect import IssueReport, ReportedIssue, report_issues_parameters
+from khorek.agents.aspect import IssueReport, ReportedIssue, report_issues_tool
 from khorek.config import load_config
 from khorek.context import AppContext
 from khorek.db import Database
@@ -435,7 +435,7 @@ def test_limit_is_cumulative_across_pairs(tmp_path: Path, capsys) -> None:
 
 
 def test_report_issues_schema_is_flat_and_requires_all_fields() -> None:
-    schema = report_issues_parameters()
+    schema = report_issues_tool().parameters
     rendered = json.dumps(schema)
     assert "$defs" not in schema
     assert "$ref" not in rendered
