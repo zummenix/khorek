@@ -7,6 +7,7 @@ import shlex
 import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 
 import httpx
@@ -209,22 +210,12 @@ def _add_issues_root_arguments(
     arguments already parsed by the parent ``issues`` parser (argparse
     applies subparser defaults over parent values).
     """
-    root_default = argparse.SUPPRESS if suppressed else "."
-    if path_long:
-        parser.add_argument(
-            "-p",
-            "--path",
-            dest="path",
-            default=root_default,
-            help="project root to operate on (default: current directory)",
-        )
-    else:
-        parser.add_argument(
-            "-p",
-            dest="path",
-            default=root_default,
-            help="project root to operate on (default: current directory)",
-        )
+    parser.add_argument(
+        *("-p", "--path") if path_long else ("-p",),
+        dest="path",
+        default=argparse.SUPPRESS if suppressed else ".",
+        help="project root to operate on (default: current directory)",
+    )
     parser.add_argument(
         "--db",
         default=argparse.SUPPRESS if suppressed else None,
@@ -884,6 +875,14 @@ def _run_issues_mutation(
     return _report_outcomes(verb, outcomes)
 
 
+_HANDLERS = {
+    "list": _run_issues_list,
+    "show": _run_issues_show,
+    "dismiss": partial(_run_issues_mutation, verb="dismissed", operation=dismiss),
+    "delete": partial(_run_issues_mutation, verb="deleted", operation=delete_issues),
+}
+
+
 def _run_issues(args: argparse.Namespace) -> int:
     """Shared preamble for the ``khorek issues`` commands.
 
@@ -904,19 +903,10 @@ def _run_issues(args: argparse.Namespace) -> int:
             return EXIT_OK
         print(f"khorek: no database at {db_path} (run khorek explore first)", file=sys.stderr)
         return EXIT_ERROR
-    if subcommand == "list":
-        return _run_issues_list(args, project_root, db_path)
-    if subcommand == "show":
-        return _run_issues_show(args, project_root, db_path)
-    if subcommand == "dismiss":
-        return _run_issues_mutation(
-            args, project_root, db_path, verb="dismissed", operation=dismiss
-        )
-    if subcommand == "delete":
-        return _run_issues_mutation(
-            args, project_root, db_path, verb="deleted", operation=delete_issues
-        )
-    return _fail(f"unknown issues subcommand: {subcommand}")
+    handler = _HANDLERS.get(subcommand)
+    if handler is None:
+        return _fail(f"unknown issues subcommand: {subcommand}")
+    return handler(args, project_root, db_path)
 
 
 def main(
