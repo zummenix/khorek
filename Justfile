@@ -26,3 +26,7 @@ test:
 
 # Run format check, lint, type check, and tests.
 check: format-check lint typecheck test
+
+# HTML report from existing test coverage data
+coverage:
+    uv run coverage html && open htmlcov/index.html
