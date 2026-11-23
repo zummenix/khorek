@@ -20,6 +20,7 @@ khorek = "khorek.cli:main"
 [dependency-groups]
 dev = [
     "pytest",
+    "pytest-cov>=7.1.0",
     "ruff",
     "ty",
 ]
@@ -34,3 +35,11 @@ select = ["E", "F", "I", "UP", "B"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "--cov=src/khorek --cov-report=term-missing"
+
+[tool.coverage.run]
+source = ["src/khorek"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 80
