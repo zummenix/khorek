@@ -18,7 +18,7 @@ import fnmatch
 import json
 import os
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +36,22 @@ MAX_FILE_LINES = 1000
 def serialized_size(value: Any) -> int:
     """UTF-8 size of *value* exactly as the agent loop serializes tool results."""
     return len(json.dumps(value, ensure_ascii=False).encode("utf-8"))
+
+
+def count_that_fits(candidates: int, fits: Callable[[int], bool]) -> int:
+    """Return the largest value in [0, candidates] for which *fits* is true.
+
+    Return -1 when no value fits.
+    """
+    low, high, best = 0, candidates, -1
+    while low <= high:
+        middle = (low + high) // 2
+        if fits(middle):
+            best = middle
+            low = middle + 1
+        else:
+            high = middle - 1
+    return best
 
 
 def fit_result(
@@ -130,19 +146,20 @@ def _fit_read_file_result(
     The cap applies to the whole JSON result the loop sends, not just the
     ``content`` string: metadata and JSON escaping count too.
     """
-    low, high, best = 1, requested, None
-    while low <= high:
-        middle = (low + high) // 2
-        end = start + middle - 1
-        content = format_file_lines(relative, text, offset=start, limit=middle, header=False)
-        candidate = _read_file_result(relative, total, start, end, content, end < total)
-        if serialized_size(candidate) <= max_bytes:
-            best = candidate
-            low = middle + 1
-        else:
-            high = middle - 1
-    if best is not None:
-        return best
+
+    def build_window(count: int) -> dict[str, Any]:
+        end = start + count - 1
+        content = format_file_lines(relative, text, offset=start, limit=count, header=False)
+        return _read_file_result(relative, total, start, end, content, end < total)
+
+    best_count = count_that_fits(
+        requested,
+        lambda count: (
+            count == 0 or (count > 0 and serialized_size(build_window(count)) <= max_bytes)
+        ),
+    )
+    if best_count >= 1:
+        return build_window(best_count)
 
     # A single numbered line is already over the cap: show as much of it as
     # fits.  No tool can read further into a line, so the tail is truncated.
@@ -151,16 +168,16 @@ def _fit_read_file_result(
     best = _read_file_result(relative, total, start, start, "", True)
     if serialized_size(best) > max_bytes:
         return best  # fixed metadata alone exceeds the cap; nothing more to drop
-    low, high = 0, len(line)
-    while low <= high:
-        middle = (low + high) // 2
-        content = prefix + line[:middle]
-        candidate = _read_file_result(relative, total, start, start, content, True)
-        if serialized_size(candidate) <= max_bytes:
-            best = candidate
-            low = middle + 1
-        else:
-            high = middle - 1
+
+    def build_line(characters: int) -> dict[str, Any]:
+        content = prefix + line[:characters]
+        return _read_file_result(relative, total, start, start, content, True)
+
+    best_characters = count_that_fits(
+        len(line), lambda characters: serialized_size(build_line(characters)) <= max_bytes
+    )
+    if best_characters >= 0:
+        return build_line(best_characters)
     return best
 
 
@@ -264,17 +281,15 @@ def _truncated_grep_match(
     """The boundary match with its text cut to fit, or ``None`` if it cannot."""
     base = {"path": match["path"], "line": match["line"]}
     text = match["text"]
-    best: dict[str, Any] | None = None
-    low, high = 0, len(text)
-    while low <= high:
-        middle = (low + high) // 2
-        candidate = {**base, "text": text[:middle]}
-        if serialized_size(_grep_result([*kept, candidate], True)) <= max_bytes:
-            best = candidate
-            low = middle + 1
-        else:
-            high = middle - 1
-    return best
+
+    def fits(characters: int) -> bool:
+        candidate = {**base, "text": text[:characters]}
+        return serialized_size(_grep_result([*kept, candidate], True)) <= max_bytes
+
+    best_characters = count_that_fits(len(text), fits)
+    if best_characters < 0:
+        return None
+    return {**base, "text": text[:best_characters]}
 
 
 def _fit_grep_result(
@@ -289,14 +304,12 @@ def _fit_grep_result(
     if serialized_size(_grep_result(matches, count_truncated)) <= max_bytes:
         return _grep_result(matches, count_truncated)
 
-    low, high, best = 0, len(matches), 0
-    while low <= high:
-        middle = (low + high) // 2
-        if serialized_size(_grep_result(matches[:middle], True)) <= max_bytes:
-            best = middle
-            low = middle + 1
-        else:
-            high = middle - 1
+    best = count_that_fits(
+        len(matches),
+        lambda count: serialized_size(_grep_result(matches[:count], True)) <= max_bytes,
+    )
+    if best < 0:
+        best = 0  # the empty payload is the floor, as today
 
     if best < len(matches):
         boundary = _truncated_grep_match(matches[best], matches[:best], max_bytes)
@@ -397,14 +410,12 @@ def _fit_list_files_result(
     if serialized_size(_list_files_result(files, count_truncated)) <= max_bytes:
         return _list_files_result(files, count_truncated)
 
-    low, high, best = 0, len(files), 0
-    while low <= high:
-        middle = (low + high) // 2
-        if serialized_size(_list_files_result(files[:middle], True)) <= max_bytes:
-            best = middle
-            low = middle + 1
-        else:
-            high = middle - 1
+    best = count_that_fits(
+        len(files),
+        lambda count: serialized_size(_list_files_result(files[:count], True)) <= max_bytes,
+    )
+    if best < 0:
+        best = 0  # the empty payload is the floor, as today
     return _list_files_result(files[:best], True)
 
 
@@ -464,6 +475,7 @@ __all__ = [
     "MAX_FILE_LINES",
     "MAX_GREP_MATCHES",
     "MAX_LISTED_FILES",
+    "count_that_fits",
     "fit_result",
     "grep_tool",
     "list_files_tool",

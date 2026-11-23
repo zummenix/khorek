@@ -8,16 +8,25 @@ from typing import Any, cast
 
 import pytest
 
-from khorek.agents.explorer import ExplorerAgent, ask_explorer_tool
+from khorek.agents.explorer import ExplorerAgent, _fit_answer, ask_explorer_tool
 from khorek.agents.fixer import edit_file_tool, write_file_tool
 from khorek.agents.tools import (
     MAX_FILE_LINES,
     MAX_GREP_MATCHES,
+    _fit_grep_result,
+    _fit_list_files_result,
+    _fit_read_file_result,
+    _grep_result,
+    _list_files_result,
+    _read_file_result,
+    _truncated_grep_match,
+    count_that_fits,
     grep_tool,
     list_files_tool,
     read_file_tool,
     read_only_tools,
 )
+from khorek.content import format_file_lines
 from khorek.llm import Tool, ToolValidationError
 from khorek.snapshots import Snapshotter
 
@@ -486,3 +495,134 @@ def test_caps_below_the_result_envelope_return_the_minimal_result(tmp_path: Path
     limited = _handler(ask_explorer_tool(explorer, 0, 1))({"question": "why?"})
     assert limited == {"truncated": True}
     assert _size(limited) > 1
+
+
+def test_count_that_fits_returns_candidates_when_all_fit() -> None:
+    assert count_that_fits(5, lambda _count: True) == 5
+
+
+def test_count_that_fits_returns_minus_one_when_none_fit() -> None:
+    assert count_that_fits(5, lambda _count: False) == -1
+
+
+def test_count_that_fits_returns_exact_fitting_boundary() -> None:
+    assert count_that_fits(10, lambda count: count <= 4) == 4
+
+
+def test_count_that_fits_handles_zero_candidates() -> None:
+    assert count_that_fits(0, lambda count: count == 0) == 0
+
+
+def test_read_file_line_window_uses_largest_fitting_count() -> None:
+    relative = "src/long.py"
+    text = "alpha\nbravo\ncharlie\ndelta\necho\n"
+    lines = [str(line) for line in text.splitlines()]
+    start, requested, total = 2, 4, 5
+
+    def build(count: int) -> dict[str, Any]:
+        end = start + count - 1
+        content = format_file_lines(relative, text, offset=start, limit=count, header=False)
+        return _read_file_result(relative, total, start, end, content, end < total)
+
+    cap = _size(build(2))
+    result = _fit_read_file_result(relative, lines, text, start, requested, total, cap)
+    chosen = result["line_end"] - start + 1
+
+    assert chosen == 2
+    assert _size(build(chosen)) <= cap
+    assert chosen < requested
+    assert _size(build(chosen + 1)) > cap
+
+
+def test_read_file_single_line_fallback_uses_largest_fitting_count() -> None:
+    relative = "src/long.py"
+    line = "x" * 100
+    prefix = "1 | "
+
+    def build(characters: int) -> dict[str, Any]:
+        return _read_file_result(relative, 1, 1, 1, prefix + line[:characters], True)
+
+    cap = _size(build(8))
+    result = _fit_read_file_result(relative, [line], f"{line}\n", 1, 1, 1, cap)
+    chosen = len(result["content"]) - len(prefix)
+
+    assert chosen == 8
+    assert _size(build(chosen)) <= cap
+    assert chosen < len(line)
+    assert _size(build(chosen + 1)) > cap
+
+
+def test_truncated_grep_match_uses_largest_fitting_count() -> None:
+    kept = [{"path": "src/a.py", "line": 1, "text": "kept"}]
+    match: dict[str, Any] = {"path": "src/b.py", "line": 2, "text": "z" * 100}
+
+    def build(characters: int) -> dict[str, Any]:
+        candidate = {
+            "path": match["path"],
+            "line": match["line"],
+            "text": match["text"][:characters],
+        }
+        return _grep_result([*kept, candidate], True)
+
+    cap = _size(build(8))
+    result = _truncated_grep_match(match, kept, cap)
+
+    assert result is not None
+    chosen = len(result["text"])
+    assert chosen == 8
+    assert _size(build(chosen)) <= cap
+    assert chosen < len(match["text"])
+    assert _size(build(chosen + 1)) > cap
+
+
+def test_grep_match_count_uses_largest_fitting_count() -> None:
+    matches = [
+        {"path": f"src/{index}.py", "line": index, "text": "hit " + "z" * 20}
+        for index in range(1, 5)
+    ]
+
+    def build(count: int) -> dict[str, Any]:
+        return _grep_result(matches[:count], True)
+
+    cap = _size(build(2))
+    result = _fit_grep_result(matches, True, cap)
+    chosen = len(result["matches"])
+
+    assert result["matches"] == matches[:chosen]
+    assert chosen == 2
+    assert _size(build(chosen)) <= cap
+    assert chosen < len(matches)
+    assert _size(build(chosen + 1)) > cap
+
+
+def test_list_file_count_uses_largest_fitting_count() -> None:
+    files = [f"src/{index:02d}-{'x' * 20}.py" for index in range(5)]
+
+    def build(count: int) -> dict[str, Any]:
+        return _list_files_result(files[:count], True)
+
+    cap = _size(build(2))
+    result = _fit_list_files_result(files, False, cap)
+    chosen = result["count"]
+
+    assert result["files"] == files[:chosen]
+    assert chosen == 2
+    assert _size(build(chosen)) <= cap
+    assert chosen < len(files)
+    assert _size(build(chosen + 1)) > cap
+
+
+def test_explorer_answer_uses_largest_fitting_count() -> None:
+    answer = "answer-" * 20
+
+    def build(count: int) -> dict[str, Any]:
+        return {"answer": answer[:count], "truncated": True}
+
+    cap = _size(build(8))
+    result = _fit_answer(answer, cap)
+    chosen = len(result["answer"])
+
+    assert chosen == 8
+    assert _size(build(chosen)) <= cap
+    assert chosen < len(answer)
+    assert _size(build(chosen + 1)) > cap
