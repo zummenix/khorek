@@ -558,89 +558,85 @@ class LLMClient:
         if effective:
             payload["reasoning_effort"] = effective
 
-        url = f"{self._base_url}/chat/completions"
         tracer = self.tracer
+
+        def record_error(
+            code: str,
+            message: str,
+            *,
+            status: int | None = None,
+            duration_ms: int | None = None,
+            response: dict[str, Any] | str | None = None,
+        ) -> None:
+            if tracer is None:
+                return
+            tracer.model_call(
+                agent=agent,
+                step=step,
+                request=payload,
+                response=response,
+                status=status,
+                duration_ms=duration_ms,
+                error={"code": code, "message": message},
+            )
+
+        url = f"{self._base_url}/chat/completions"
         started = time.monotonic()
         try:
             response = self._client.post(url, json=payload, timeout=self.config.call_timeout)
         except httpx.TimeoutException as exc:
-            if tracer is not None:
-                tracer.model_call(
-                    agent=agent,
-                    step=step,
-                    request=payload,
-                    duration_ms=_elapsed_ms(started),
-                    error={"code": "timeout", "message": f"model call timed out: {url}"},
-                )
+            record_error(
+                "timeout", f"model call timed out: {url}", duration_ms=_elapsed_ms(started)
+            )
             raise AgentError("timeout", f"model call timed out: {url}") from exc
         except httpx.HTTPError as exc:
-            if tracer is not None:
-                tracer.model_call(
-                    agent=agent,
-                    step=step,
-                    request=payload,
-                    duration_ms=_elapsed_ms(started),
-                    error={"code": "http", "message": f"model call failed ({url}): {exc}"},
-                )
+            record_error(
+                "http", f"model call failed ({url}): {exc}", duration_ms=_elapsed_ms(started)
+            )
             raise AgentError("http", f"model call failed ({url}): {exc}") from exc
 
         duration_ms = _elapsed_ms(started)
         raw_text = response.text
         if not response.is_success:
             body = raw_text[:500]
-            if tracer is not None:
-                tracer.model_call(
-                    agent=agent,
-                    step=step,
-                    request=payload,
-                    response=raw_text,
-                    status=response.status_code,
-                    duration_ms=duration_ms,
-                    error={
-                        "code": "http",
-                        "message": f"model returned HTTP {response.status_code}: {body}",
-                    },
-                )
+            record_error(
+                "http",
+                f"model returned HTTP {response.status_code}: {body}",
+                response=raw_text,
+                status=response.status_code,
+                duration_ms=duration_ms,
+            )
             raise AgentError("http", f"model returned HTTP {response.status_code}: {body}")
         try:
             data = response.json()
         except ValueError as exc:
-            if tracer is not None:
-                tracer.model_call(
-                    agent=agent,
-                    step=step,
-                    request=payload,
-                    response=raw_text,
-                    status=response.status_code,
-                    duration_ms=duration_ms,
-                    error={"code": "http", "message": "model returned non-JSON response"},
-                )
+            record_error(
+                "http",
+                "model returned non-JSON response",
+                response=raw_text,
+                status=response.status_code,
+                duration_ms=duration_ms,
+            )
             raise AgentError("http", "model returned non-JSON response") from exc
         choices = data.get("choices") if isinstance(data, dict) else None
         if not isinstance(choices, list) or not choices:
-            if tracer is not None:
-                tracer.model_call(
-                    agent=agent,
-                    step=step,
-                    request=payload,
-                    response=raw_text,
-                    status=response.status_code,
-                    duration_ms=duration_ms,
-                    error={"code": "http", "message": "model response has no choices"},
-                )
+            record_error(
+                "http",
+                "model response has no choices",
+                response=raw_text,
+                status=response.status_code,
+                duration_ms=duration_ms,
+            )
             raise AgentError("http", "model response has no choices")
         message = choices[0].get("message") if isinstance(choices[0], dict) else None
         if not isinstance(message, dict):
-            if tracer is not None:
-                tracer.model_call(
-                    agent=agent,
-                    step=step,
-                    request=payload,
-                    response=raw_text,
-                    status=response.status_code,
-                    duration_ms=duration_ms,
-                    error={"code": "http", "message": "model response has no message"},
-                )
+            record_error(
+                "http",
+                "model response has no message",
+                response=raw_text,
+                status=response.status_code,
+                duration_ms=duration_ms,
+            )
             raise AgentError("http", "model response has no message")
         if tracer is not None:
             usage = data.get("usage") if isinstance(data, dict) else None

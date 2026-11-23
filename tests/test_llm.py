@@ -327,6 +327,35 @@ def test_timeout_is_structured() -> None:
     assert exc_info.value.code == "timeout"
 
 
+def test_no_choices_response_records_http_error(tmp_path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/models"):
+            return httpx.Response(200, json={"data": []})
+        return httpx.Response(200, json={"choices": []})
+
+    trace_root = tmp_path / "traces"
+    recorder = TraceRecorder(trace_root)
+    client = LLMClient(_config(), transport=httpx.MockTransport(handler), tracer=recorder)
+    with pytest.raises(AgentError, match="model response has no choices") as exc_info:
+        client.run_agent(
+            system_prompt="system",
+            user_prompt="user",
+            tools=[_echo_tool()],
+            max_tool_calls=2,
+            force_tool_call=False,
+            text_is_final=True,
+        )
+    recorder.close()
+
+    assert exc_info.value.code == "http"
+    events = TraceStore(trace_root).events(recorder.run_id)
+    call = next(event for event in events if event["kind"] == "model_call")
+    assert call["error"]["code"] == "http"
+    assert call["error"]["message"] == "model response has no choices"
+    assert call["status"] == 200
+    assert call["duration_ms"] is not None
+
+
 def test_payload_caps_tokens_and_disables_thinking() -> None:
     fake = FakeModel([tool_message("report", {"value": "ok"})])
     config = _config().model_copy(update={"max_tokens": 123})
