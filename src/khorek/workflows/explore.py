@@ -16,6 +16,7 @@ from langgraph.graph import END, StateGraph
 from khorek.agents.aspect import AspectAgent, IssueReport
 from khorek.agents.explorer import ExplorerAgent
 from khorek.config import AspectConfig
+from khorek.content import line_count
 from khorek.context import AppContext
 from khorek.files import enumerate_files, read_text_file, sha256_file
 from khorek.llm import AgentError
@@ -50,11 +51,6 @@ class ExploreState:
     index: int = 0
     stats: ExploreStats = field(default_factory=ExploreStats)
     stop: bool = False
-
-
-def line_count(content: str) -> int:
-    """Line count used for clamping (never less than 1)."""
-    return max(1, len(content.splitlines()))
 
 
 def validate_issues(

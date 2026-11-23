@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from khorek.content import format_file_lines
+from khorek.content import format_file_lines, indent_block, line_count
 
 
 def _write(root: Path, relative: str, content: str) -> Path:
@@ -194,3 +194,19 @@ def test_header_false_empty_file_renders_a_blank_numbered_line(tmp_path: Path) -
     _write(tmp_path, "empty.py", "")
 
     assert format_file_lines("empty.py", "", header=False) == "1 | \n"
+
+
+def test_line_count_empty_text_is_one_line() -> None:
+    assert line_count("") == 1
+
+
+def test_line_count_trailing_newline_does_not_add_a_line() -> None:
+    assert line_count("one\ntwo\n") == 2
+
+
+def test_indent_block_keeps_blank_lines_unindented() -> None:
+    assert indent_block("first\n\nthird") == ["    first", "", "    third"]
+
+
+def test_indent_block_strips_leading_whitespace() -> None:
+    assert indent_block("  first\n\tsecond") == ["    first", "    second"]

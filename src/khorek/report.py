@@ -6,6 +6,7 @@ import sys
 from dataclasses import dataclass
 from typing import TextIO
 
+from khorek.content import indent_block
 from khorek.db import Issue
 
 
@@ -62,18 +63,6 @@ class CombinedStats:
     created: int = 0
     pruned: int = 0
     cycles: int = 0
-
-
-def _indented(text: str) -> list[str]:
-    """Re-indent every non-blank line of *text* to exactly four spaces.
-
-    Internal blank lines are emitted as blank lines (no indent).
-    """
-    lines: list[str] = []
-    for line in text.splitlines():
-        stripped = line.strip()
-        lines.append(f"    {stripped}" if stripped else "")
-    return lines
 
 
 class Reporter:
@@ -136,15 +125,15 @@ class Reporter:
         problem = issue.description.strip()
         if problem:
             lines.append("  problem:")
-            lines.extend(_indented(problem))
+            lines.extend(indent_block(problem))
         summary = fix_summary.strip()
         if summary:
             lines.append("  fix:")
-            lines.extend(_indented(summary))
+            lines.extend(indent_block(summary))
         review = review_summary.strip()
         if review:
             lines.append("  review:")
-            lines.extend(_indented(review))
+            lines.extend(indent_block(review))
         if lines:
             self.message("\n".join(lines))
 

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 from khorek.agents.aspect import AspectAgent, RevalidationReport
 from khorek.config import AspectConfig
+from khorek.content import line_count
 from khorek.context import AppContext
 from khorek.db import Issue
 from khorek.files import PathEscapeError, read_text_file
@@ -109,7 +110,7 @@ class Revalidator:
         """
         database = self.app.database
         reporter = self.app.reporter
-        line_count = max(1, len(content.splitlines()))
+        count = line_count(content)
         open_by_id = {issue.id: issue for issue in issues}
         revalidated = 0
         resolved = 0
@@ -130,8 +131,8 @@ class Revalidator:
                 end = issue.line_end
                 fields: dict[str, object] = {}
                 if verdict.line_start is not None and verdict.line_end is not None:
-                    start = min(max(1, verdict.line_start), line_count)
-                    end = min(max(start, verdict.line_end), line_count)
+                    start = min(max(1, verdict.line_start), count)
+                    end = min(max(start, verdict.line_end), count)
                     fields["line_start"] = start
                     fields["line_end"] = end
                 description = (verdict.description or "").strip()

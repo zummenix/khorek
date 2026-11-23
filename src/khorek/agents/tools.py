@@ -24,6 +24,11 @@ from typing import Any
 
 from pathspec import PathSpec
 
+from khorek.agents.arguments import (
+    optional_int_argument,
+    optional_string_argument,
+    string_argument,
+)
 from khorek.content import format_file_lines
 from khorek.files import PathEscapeError, is_binary, read_text_file, resolve_within_root, walk_files
 from khorek.llm import Tool, ToolValidationError
@@ -71,31 +76,6 @@ def fit_result(
         if serialized_size(candidate) <= max_bytes:
             return candidate
     return fallbacks[-1]
-
-
-def _string_argument(arguments: dict[str, Any], name: str, *, default: str | None = None) -> str:
-    value = arguments.get(name, default)
-    if not isinstance(value, str):
-        raise ToolValidationError(f"argument {name!r} must be a string")
-    return value
-
-
-def _optional_string_argument(arguments: dict[str, Any], name: str) -> str | None:
-    value = arguments.get(name)
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        raise ToolValidationError(f"argument {name!r} must be a string when given")
-    return value
-
-
-def _optional_int_argument(arguments: dict[str, Any], name: str) -> int | None:
-    value = arguments.get(name)
-    if value is None:
-        return None
-    if not isinstance(value, int) or isinstance(value, bool):
-        raise ToolValidationError(f"argument {name!r} must be an integer when given")
-    return value
 
 
 def _resolve_file(root: Path, root_real: Path, raw: str) -> tuple[Path, str]:
@@ -186,9 +166,9 @@ def read_file_tool(root: Path, max_file_bytes: int, max_tool_output_bytes: int) 
     root_real = Path(os.path.realpath(root))
 
     def handler(arguments: dict[str, Any]) -> dict[str, Any]:
-        raw = _string_argument(arguments, "path")
-        offset = _optional_int_argument(arguments, "offset")
-        limit = _optional_int_argument(arguments, "limit")
+        raw = string_argument(arguments, "path")
+        offset = optional_int_argument(arguments, "offset")
+        limit = optional_int_argument(arguments, "limit")
         resolved, relative = _resolve_file(root, root_real, raw)
         try:
             if resolved.stat().st_size > max_file_bytes:
@@ -323,10 +303,10 @@ def grep_tool(root: Path, max_file_bytes: int, max_tool_output_bytes: int) -> To
     root_real = Path(os.path.realpath(root))
 
     def handler(arguments: dict[str, Any]) -> dict[str, Any]:
-        pattern = _string_argument(arguments, "pattern")
-        target = _string_argument(arguments, "path", default=".")
-        glob = _optional_string_argument(arguments, "glob")
-        requested = _optional_int_argument(arguments, "limit")
+        pattern = string_argument(arguments, "pattern")
+        target = string_argument(arguments, "path", default=".")
+        glob = optional_string_argument(arguments, "glob")
+        requested = optional_int_argument(arguments, "limit")
         match_limit = MAX_GREP_MATCHES
         if requested is not None and requested > 0:
             match_limit = min(requested, MAX_GREP_MATCHES)
@@ -423,8 +403,8 @@ def list_files_tool(root: Path, max_tool_output_bytes: int) -> Tool:
     """Create the self-truncating ``list_files`` tool."""
 
     def handler(arguments: dict[str, Any]) -> dict[str, Any]:
-        target = _string_argument(arguments, "path", default=".")
-        pattern = _optional_string_argument(arguments, "pattern")
+        target = string_argument(arguments, "path", default=".")
+        pattern = optional_string_argument(arguments, "pattern")
         files = walk_files(root, target)
         if pattern:
             if "*" in pattern or "?" in pattern or "[" in pattern:

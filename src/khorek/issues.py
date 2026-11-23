@@ -19,6 +19,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from khorek.content import indent_block
 from khorek.db import Database, Issue
 from khorek.files import sha256_file
 
@@ -210,15 +211,6 @@ def _pad(value: str, width: int) -> str:
     return value.ljust(width + 2)
 
 
-def _indent(text: str) -> list[str]:
-    """Indent every non-blank line of *text* to four spaces (blanks stay blank)."""
-    lines: list[str] = []
-    for line in text.splitlines():
-        stripped = line.strip()
-        lines.append(f"    {stripped}" if stripped else "")
-    return lines
-
-
 def render_list(issues: Sequence[Issue], *, stale: Mapping[int, str] | None) -> str:
     """Render the issues list block (rows plus footer), or ``no open issues``.
 
@@ -254,7 +246,7 @@ def render_list(issues: Sequence[Issue], *, stale: Mapping[int, str] | None) -> 
         lines = [header]
         if issue.retry_count > 0:
             lines.append(f"    Retried: {issue.retry_count}")
-        lines.extend(_indent(issue.description))
+        lines.extend(indent_block(issue.description))
         blocks.append("\n".join(lines))
 
     footer = f"{len(issues)} open issue" + ("" if len(issues) == 1 else "s")
@@ -278,7 +270,7 @@ def render_show(issue: Issue, *, status: str) -> str:
         lines.append(f"{(label + ':').ljust(width)}  {value}")
     if issue.last_error:
         lines.append("last_error:")
-        lines.extend(_indent(issue.last_error))
+        lines.extend(indent_block(issue.last_error))
     lines.append("")
     lines.append(issue.description)
     return "\n".join(lines)

@@ -12,7 +12,7 @@ from khorek.agents.explorer import ExplorerAgent, ask_explorer_tool
 from khorek.agents.schema import terminal_tool
 from khorek.agents.tools import read_only_tools
 from khorek.config import AspectAgentConfig, AspectConfig, DefaultsConfig
-from khorek.content import format_file_lines
+from khorek.content import format_file_lines, line_count
 from khorek.db import Issue
 from khorek.llm import LLMClient, Tool
 from khorek.prompts import default_prompt
@@ -214,7 +214,7 @@ def _revalidate_user_prompt(
     issues: Sequence[Issue],
 ) -> str:
     """Build the revalidation user prompt: task, current file, and open issues."""
-    count = max(1, len(content.splitlines()))
+    count = line_count(content)
     issue_lines = [
         f"#{issue.id}: lines {issue.line_start}-{issue.line_end}: {issue.description.strip()}"
         for issue in issues
