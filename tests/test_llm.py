@@ -21,6 +21,7 @@ from khorek.llm import (
     Tool,
     ToolValidationError,
 )
+from khorek.trace import TraceRecorder, TraceStore
 from tests.conftest import FakeModel, text_message, tool_message
 
 
@@ -566,3 +567,34 @@ def test_text_final_agent_stamps_notes_on_its_tool_calls(project) -> None:
         agent="explorer",
     )
     assert _collect_notes(fake) == ["[tool calls 1/5 – 4 left]"]
+
+
+def test_unexpected_handler_error_is_traced_and_becomes_schema_error(tmp_path) -> None:
+    def broken(_arguments: dict[str, Any]) -> dict[str, Any]:
+        raise RuntimeError("handler exploded")
+
+    tool = Tool(
+        name="broken",
+        description="Fails.",
+        parameters={"type": "object", "properties": {}, "required": []},
+        handler=broken,
+    )
+    fake = FakeModel([tool_message("broken", {})])
+    trace_root = tmp_path / "traces"
+    recorder = TraceRecorder(trace_root)
+    client = LLMClient(_config(), transport=fake.transport, tracer=recorder)
+    with pytest.raises(AgentError, match="tool broken failed: handler exploded") as exc_info:
+        client.run_agent(
+            system_prompt="system",
+            user_prompt="user",
+            tools=[tool],
+            max_tool_calls=1,
+            force_tool_call=False,
+            text_is_final=True,
+        )
+    recorder.close()
+
+    assert exc_info.value.code == "schema"
+    events = TraceStore(trace_root).events(recorder.run_id)
+    tool_event = next(event for event in events if event["kind"] == "tool_call")
+    assert tool_event["error"] == "handler exploded"
