@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import httpx
@@ -185,6 +186,33 @@ def test_model_unavailable_is_fatal_and_leaves_no_db(tmp_path: Path, capsys) -> 
     assert code == 2
     assert not db_path.exists()
     assert "unreachable" in capsys.readouterr().err
+
+
+def test_workflow_body_error_closes_tracer_and_prints_trace(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    project = make_project(tmp_path / "project", observe={"enabled": True})
+    fake = FakeModel([])
+
+    def fail_workflow(*_args, **_kwargs) -> None:
+        raise RuntimeError("workflow exploded")
+
+    monkeypatch.setattr("khorek.cli.run_explore", fail_workflow)
+    with pytest.raises(RuntimeError, match="workflow exploded"):
+        run_cli(fake, *explore_args(project))
+
+    output = capsys.readouterr().out
+    run_dirs = [path for path in project.trace_root.iterdir() if path.is_dir()]
+    assert len(run_dirs) == 1
+    meta = json.loads((run_dirs[0] / "meta.json").read_text(encoding="utf-8"))
+    events = [
+        json.loads(line)
+        for line in (run_dirs[0] / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert meta["status"] == "fatal"
+    assert meta["ended_at"]
+    assert any(event["kind"] == "run_end" for event in events)
+    assert f"trace: {run_dirs[0]}" in output
 
 
 def test_explicit_db_writes_to_tmp_path_not_home(
