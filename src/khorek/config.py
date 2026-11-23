@@ -37,6 +37,12 @@ ENV_CALL_TIMEOUT = "KHOREK_LLM_CALL_TIMEOUT"
 ENV_MAX_TOKENS = "KHOREK_LLM_MAX_TOKENS"
 ENV_REASONING_EFFORT = "KHOREK_LLM_REASONING_EFFORT"
 
+_PARSED_OVERRIDES = (
+    (ENV_TEMPERATURE, "temperature", float, "a number"),
+    (ENV_CALL_TIMEOUT, "call_timeout", float, "a number"),
+    (ENV_MAX_TOKENS, "max_tokens", int, "an integer"),
+)
+
 
 class ConfigError(Exception):
     """Raised when the configuration is missing, malformed, or invalid."""
@@ -191,24 +197,14 @@ def _env_overrides() -> dict[str, object]:
     model = os.environ.get(ENV_MODEL)
     if model is not None:
         overrides["model"] = model
-    temperature = os.environ.get(ENV_TEMPERATURE)
-    if temperature is not None:
+    for env, field, parse, expected in _PARSED_OVERRIDES:
+        raw = os.environ.get(env)
+        if raw is None:
+            continue
         try:
-            overrides["temperature"] = float(temperature)
+            overrides[field] = parse(raw)
         except ValueError as exc:
-            raise ConfigError(f"{ENV_TEMPERATURE} must be a number, got {temperature!r}") from exc
-    call_timeout = os.environ.get(ENV_CALL_TIMEOUT)
-    if call_timeout is not None:
-        try:
-            overrides["call_timeout"] = float(call_timeout)
-        except ValueError as exc:
-            raise ConfigError(f"{ENV_CALL_TIMEOUT} must be a number, got {call_timeout!r}") from exc
-    max_tokens = os.environ.get(ENV_MAX_TOKENS)
-    if max_tokens is not None:
-        try:
-            overrides["max_tokens"] = int(max_tokens)
-        except ValueError as exc:
-            raise ConfigError(f"{ENV_MAX_TOKENS} must be an integer, got {max_tokens!r}") from exc
+            raise ConfigError(f"{env} must be {expected}, got {raw!r}") from exc
     reasoning_effort = os.environ.get(ENV_REASONING_EFFORT)
     if reasoning_effort is not None:
         overrides["reasoning_effort"] = reasoning_effort.strip() or None
