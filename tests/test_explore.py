@@ -78,6 +78,22 @@ def test_skip_on_open_issues_does_not_duplicate(project) -> None:
     assert len(issues(project)) == 1
 
 
+def test_pair_at_current_sha_skips_without_calling_llm(project, capsys) -> None:
+    current_sha = sha256_file(project.root / "src/a.py")
+    with Database(project.db_path, project.root) as db:
+        db.upsert_state("comments", "src/a.py", current_sha, "clean")
+
+    fake = FakeModel([])
+    assert run_cli(fake, *explore_args(project)) == 0
+    assert fake.chat_calls == 0
+    row = state(project)
+    assert row is not None
+    assert row.sha256 == current_sha
+    assert row.outcome == "clean"
+    assert issues(project) == []
+    assert "skipped (clean)" in capsys.readouterr().out
+
+
 def test_re_explores_when_state_row_is_absent(project) -> None:
     fake = FakeModel([report(issue("bad comment", 2, 2, "high"))])
     assert run_cli(fake, *explore_args(project)) == 0

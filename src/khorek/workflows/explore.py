@@ -124,51 +124,23 @@ class _Explorer:
             pairs.extend(Pair(aspect=aspect, path=path.as_posix()) for path in files)
         return pairs
 
-    def process_pair(self, pair: Pair, *, remaining_budget: int | None = None) -> ExploreStats:
-        """Process one pair and return its stats delta.
-
-        ``remaining_budget`` is the number of issues the run may still create
-        (``None`` means unlimited).  It participates in the effective cap so a
-        pair can never overshoot ``--limit``.
-        """
-        app = self.app
-        stats = ExploreStats()
-        aspect = pair.aspect
-        relative = pair.path
-        absolute = app.project_root / relative
-
-        try:
-            current_sha = sha256_file(absolute)
-        except OSError as exc:
-            app.reporter.pair_errored(aspect.id, relative, "read", str(exc))
-            return replace(stats, errored=1)
-
-        # The state row is the pair's version token.  A matching row means the
-        # pair was explored at exactly the current content, so its open issues
-        # (if any) are still valid and the pair is skipped.  An absent or
-        # drifted row means the pair is re-explored and its old issues replaced.
-        state = app.database.get_state(aspect.id, relative)
+    def _skip_reason(self, aspect: AspectConfig, relative: str, current_sha: str) -> str | None:
+        """Return the stored outcome when this pair is current, else ``None``."""
+        state = self.app.database.get_state(aspect.id, relative)
         if state is not None and state.sha256 == current_sha:
-            app.reporter.pair_skipped(aspect.id, relative, state.outcome)
-            return replace(stats, skipped=1)
+            return state.outcome
+        return None
 
-        # Stale or never-explored pair: replace the state and any open issues
-        # with a fresh exploration.
-        app.database.delete_state(aspect.id, relative)
-        app.database.delete_issues_for(aspect.id, relative)
-
-        try:
-            content = read_text_file(absolute)
-        except OSError as exc:
-            app.reporter.pair_errored(aspect.id, relative, "read", str(exc))
-            return replace(stats, errored=1)
-
-        try:
-            report = self.aspect_agent.review(aspect=aspect, path=relative, content=content)
-        except AgentError as exc:
-            app.reporter.pair_errored(aspect.id, relative, exc.code, str(exc))
-            return replace(stats, errored=1)
-
+    def _store_report(
+        self,
+        aspect: AspectConfig,
+        relative: str,
+        report: IssueReport,
+        content: str,
+        remaining_budget: int | None,
+    ) -> tuple[int, str]:
+        """Validate and persist a report, returning its issue count and outcome."""
+        app = self.app
         cap = (
             aspect.max_issues_per_file
             if aspect.max_issues_per_file is not None
@@ -193,13 +165,62 @@ class _Explorer:
             outcome = "issues"
         else:
             outcome = "clean"
+        return len(kept), outcome
+
+    def process_pair(self, pair: Pair, *, remaining_budget: int | None = None) -> ExploreStats:
+        """Process one pair and return its stats delta.
+
+        ``remaining_budget`` is the number of issues the run may still create
+        (``None`` means unlimited).  It participates in the effective cap so a
+        pair can never overshoot ``--limit``.
+        """
+        app = self.app
+        stats = ExploreStats()
+        aspect = pair.aspect
+        relative = pair.path
+        absolute = app.project_root / relative
+
+        try:
+            current_sha = sha256_file(absolute)
+        except OSError as exc:
+            app.reporter.pair_errored(aspect.id, relative, "read", str(exc))
+            return replace(stats, errored=1)
+
+        # The state row is the pair's version token: a matching SHA means its
+        # open issues (if any) are still valid and the pair is skipped.
+        skip_reason = self._skip_reason(aspect, relative, current_sha)
+        if skip_reason is not None:
+            app.reporter.pair_skipped(aspect.id, relative, skip_reason)
+            return replace(stats, skipped=1)
+
+        # Stale or never-explored pair: replace the state and any open issues
+        # with a fresh exploration.
+        app.database.delete_state(aspect.id, relative)
+        app.database.delete_issues_for(aspect.id, relative)
+
+        try:
+            content = read_text_file(absolute)
+        except OSError as exc:
+            app.reporter.pair_errored(aspect.id, relative, "read", str(exc))
+            return replace(stats, errored=1)
+
+        try:
+            report = self.aspect_agent.review(aspect=aspect, path=relative, content=content)
+        except AgentError as exc:
+            app.reporter.pair_errored(aspect.id, relative, exc.code, str(exc))
+            return replace(stats, errored=1)
+
+        kept_count, outcome = self._store_report(
+            aspect, relative, report, content, remaining_budget
+        )
+        was_truncated = outcome == "truncated"
         app.database.upsert_state(aspect.id, relative, current_sha, outcome)
-        app.reporter.pair_explored(aspect.id, relative, len(kept), outcome)
+        app.reporter.pair_explored(aspect.id, relative, kept_count, outcome)
 
         return replace(
             stats,
             explored=1,
-            issues_created=len(kept),
+            issues_created=kept_count,
             truncated=1 if was_truncated else 0,
         )
 
