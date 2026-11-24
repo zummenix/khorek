@@ -81,7 +81,7 @@ def test_staleness_fresh_changed_missing(project, db_path) -> None:
         db.upsert_state("comments", "src/a.py", sha256_file(a), "issues")
         db.upsert_state("comments", "src/b.py", sha256_file(b), "issues")
 
-    # Make b.py changed and delete gone.py.
+    # Make b.py changed; gone.py was never created so it is already missing.
     b.write_text("x = 2\n")
 
     with Database(db_path, root, readonly=True) as db:
@@ -223,7 +223,7 @@ def test_dismiss_siblings_leaves_state(project, db_path) -> None:
 
     with Database(db_path, root) as db:
         outcomes = dismiss(db, root, [first])
-    assert outcomes[0].action == ""  # sibling remains, state untouched
+    assert outcomes[0].action == ""
     with Database(db_path, root, readonly=True) as db:
         state = db.get_state("comments", "src/a.py")
         assert state is not None
