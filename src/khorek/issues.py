@@ -23,7 +23,7 @@ from khorek.content import indent_block
 from khorek.db import Database, Issue
 from khorek.files import sha256_file
 
-# Staleness classifications (internal).
+# Staleness classifications.
 FRESH = "fresh"
 CHANGED = "changed"
 MISSING = "missing"

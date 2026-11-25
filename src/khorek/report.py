@@ -159,7 +159,6 @@ class Reporter:
     # -- explore-and-fix -----------------------------------------------
 
     def combined_summary(self, stats: CombinedStats) -> None:
-        """One unified end-of-run line for the combined workflow."""
         self.message(
             "explore-and-fix summary: "
             f"{stats.fixed} fixed, "
