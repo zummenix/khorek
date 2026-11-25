@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from khorek.cli import build_parser, main
+from khorek.cli import main
+from khorek.cli_parser import build_parser
 from khorek.config import AspectConfig, VerifyCommand, load_config
 from khorek.init import Answers, InitAnswers, render_init_config, resolve_config_name
 from tests.conftest import FakeModel
