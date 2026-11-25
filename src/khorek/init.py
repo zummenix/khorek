@@ -157,7 +157,7 @@ def _toml_value(value: object) -> str:
 
 
 def _commented(key: str, default: object) -> str:
-    """Render an optional key commented out, with its built-in default visible."""
+    """Render an optional key commented out; the built-in default is shown when one exists."""
     if default is None:
         return f"# {key}"
     return f"# {key} = {_toml_value(default)}"

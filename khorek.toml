@@ -1,6 +1,6 @@
 [llm]
 base_url = "http://127.0.0.1:11434/v1"
-model = "qwen3.8:27b-mlx"
+model = "inkling-2-mini:26b-a5b-nvfp4"
 temperature = 0.2
 call_timeout = 3600
 # Hard output cap (Ollama: num_predict). Even a stuck thinking model
@@ -41,11 +41,16 @@ reasoning_effort = "low"
 max_handoffs = 2
 max_tool_calls = 20
 
-# Run in order, first failure is reported back to the Fixer.
-# Commands must be non-mutating checks: the harness does not restore side
-# effects they leave behind, only the files the Fixer touched.
 [[verify]]
 cmd = "uv run ruff format --check ."
+timeout = 120
+
+[[verify]]
+cmd = "uv run ruff check ."
+timeout = 120
+
+[[verify]]
+cmd = "uv run ty check ."
 timeout = 120
 
 [[verify]]
