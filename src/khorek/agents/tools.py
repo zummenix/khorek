@@ -289,7 +289,7 @@ def _fit_grep_result(
         lambda count: serialized_size(_grep_result(matches[:count], True)) <= max_bytes,
     )
     if best < 0:
-        best = 0  # the empty payload is the floor, as today
+        best = 0
 
     if best < len(matches):
         boundary = _truncated_grep_match(matches[best], matches[:best], max_bytes)
@@ -395,7 +395,7 @@ def _fit_list_files_result(
         lambda count: serialized_size(_list_files_result(files[:count], True)) <= max_bytes,
     )
     if best < 0:
-        best = 0  # the empty payload is the floor, as today
+        best = 0
     return _list_files_result(files[:best], True)
 
 

@@ -63,7 +63,7 @@ def _fit_answer(answer: str, max_bytes: int) -> dict[str, Any]:
         len(answer), lambda count: serialized_size(build(answer[:count], True)) <= max_bytes
     )
     if best < 0:
-        best = 0  # the empty answer is the floor, as today
+        best = 0
     return build(answer[:best], True)
 
 
