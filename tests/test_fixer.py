@@ -14,7 +14,7 @@ from khorek.agents.fixer import (
     write_file_tool,
 )
 from khorek.config import DefaultsConfig, FixerAgentConfig, LLMConfig
-from khorek.content import format_file_lines
+from khorek.content import format_content_lines, format_file_lines
 from khorek.db import Issue
 from khorek.llm import LLMClient, Tool, ToolValidationError
 from khorek.snapshots import Snapshotter
@@ -192,9 +192,9 @@ def test_fixer_prompt_has_issue_file_snippet_and_previous_failure(tmp_path: Path
     user_prompt = request["messages"][1]["content"]
     assert "the comment is inconsistent" in user_prompt
     assert "Current line count: 3" in user_prompt
-    snippet = format_file_lines("src/a.py", "one\ntwo\nthree\n", offset=2, limit=1)
+    snippet = format_content_lines("one\ntwo\nthree\n", offset=2, limit=1)
     assert snippet in user_prompt
-    full = format_file_lines("src/a.py", "one\ntwo\nthree\n", offset=None, limit=None)
+    full = format_file_lines("src/a.py", "one\ntwo\nthree\n")
     assert full in user_prompt
     assert "verification failed: expected TWO" in user_prompt
 

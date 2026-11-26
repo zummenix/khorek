@@ -156,7 +156,7 @@ class AspectAgent:
         user_prompt = (
             f"Aspect: {aspect.id}\n"
             f"Task: {aspect.prompt}\n\n"
-            f"{format_file_lines(path, content, offset=None, limit=None)}\n\n"
+            f"{format_file_lines(path, content)}\n\n"
             "Report your findings for this aspect with report_issues. If there is "
             "nothing to report, call it with an empty list for the `issues` argument."
         )
@@ -228,7 +228,7 @@ def _revalidate_user_prompt(
         + "\n".join(issue_lines)
         + "\n\n"
         "Current file contents:\n"
-        f"{format_file_lines(path, content, offset=None, limit=None)}\n\n"
+        f"{format_file_lines(path, content)}\n\n"
         "For every issue above, report a verdict with report_revalidation, keyed "
         "by the issue's id. A 'gone' verdict needs a concrete reason; an issue you "
         "are unsure about should be 'uncertain', never 'gone'."
