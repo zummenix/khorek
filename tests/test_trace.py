@@ -241,7 +241,7 @@ def test_traces_cli_uses_configured_directory(tmp_path: Path, monkeypatch) -> No
         calls.append((root, kwargs))
 
     monkeypatch.setattr("khorek.cli.serve_traces", fake_serve)
-    assert main(["traces", "-p", str(project.root), "--no-open"]) == 0
+    assert main(["traces", "--project-root", str(project.root), "--no-open"]) == 0
     assert calls[0][0] == trace_dir.resolve()
     assert calls[0][1]["open_browser"] is False
 
@@ -398,7 +398,7 @@ def test_traces_cli_stop_reports_stopped_server(tmp_path: Path, monkeypatch, cap
         return info
 
     monkeypatch.setattr("khorek.cli.stop_viewer", fake_stop)
-    assert main(["traces", "-p", str(project.root), "--stop"]) == 0
+    assert main(["traces", "--project-root", str(project.root), "--stop"]) == 0
     assert calls == [root.resolve()]
     assert "stopped http://127.0.0.1:8765/" in capsys.readouterr().out
 
@@ -408,7 +408,7 @@ def test_traces_cli_stop_without_a_server_is_ok(tmp_path: Path, monkeypatch, cap
 
     project = make_project(tmp_path / "project")
     monkeypatch.setattr("khorek.cli.stop_viewer", lambda root: None)
-    assert main(["traces", "-p", str(project.root), "--stop"]) == 0
+    assert main(["traces", "--project-root", str(project.root), "--stop"]) == 0
     assert "no trace viewer running" in capsys.readouterr().out
 
 

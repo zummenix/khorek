@@ -31,7 +31,7 @@ from tests.conftest import (
 
 def issues_args(project: Project, *extra: str | Path) -> tuple[str | Path, ...]:
     """Standard ``issues`` arguments for a tmp project."""
-    return ("issues", "-p", project.root, "--db", project.db_path, *extra)
+    return ("issues", "--project-root", project.root, "--db", project.db_path, *extra)
 
 
 def report() -> dict[str, object]:
@@ -144,7 +144,7 @@ def test_missing_project_path_is_fatal(tmp_path: Path) -> None:
         run_cli(
             fake,
             "explore",
-            "-p",
+            "--project-root",
             tmp_path / "missing",
             "--db",
             tmp_path / "x.db",
@@ -180,7 +180,7 @@ def test_model_unavailable_is_fatal_and_leaves_no_db(tmp_path: Path, capsys) -> 
         raise httpx.ConnectError("down")
 
     code = main(
-        ["explore", "-p", str(project.root), "--db", str(db_path)],
+        ["explore", "--project-root", str(project.root), "--db", str(db_path)],
         transport=httpx.MockTransport(handler),
     )
     assert code == 2
@@ -223,7 +223,7 @@ def test_explicit_db_writes_to_tmp_path_not_home(
     fake = FakeModel([report()])
 
     nested = tmp_path / "nested" / "khorek.db"
-    assert run_cli(fake, "explore", "-p", project.root, "--db", nested) == 0
+    assert run_cli(fake, "explore", "--project-root", project.root, "--db", nested) == 0
     assert nested.is_file()
     assert not (home / ".khorek").exists()
     assert "explore summary" in capsys.readouterr().out
@@ -234,7 +234,7 @@ def test_default_db_path_uses_patched_home(project, tmp_path: Path, monkeypatch)
     monkeypatch.setenv("HOME", str(home))
     fake = FakeModel([report()])
 
-    assert run_cli(fake, "explore", "-p", project.root) == 0
+    assert run_cli(fake, "explore", "--project-root", project.root) == 0
     expected = default_db_path(project.root, home=home)
     assert expected.is_file()
     with Database(expected, project.root) as db:
@@ -247,10 +247,10 @@ def test_reusing_db_for_another_project_exits_2(tmp_path: Path, capsys) -> None:
     shared = tmp_path / "shared.db"
     fake = FakeModel([report()])
 
-    assert run_cli(fake, "explore", "-p", one.root, "--db", shared) == 0
+    assert run_cli(fake, "explore", "--project-root", one.root, "--db", shared) == 0
     assert fake.chat_calls == 1
 
-    assert run_cli(fake, "explore", "-p", two.root, "--db", shared) == 2
+    assert run_cli(fake, "explore", "--project-root", two.root, "--db", shared) == 2
     assert fake.chat_calls == 1
     assert "belongs to project" in capsys.readouterr().err
 
@@ -280,7 +280,7 @@ def test_reset_deletes_db_wal_shm_and_lock(project, capsys) -> None:
     shm.write_bytes(b"shm")
     assert lock.exists()
 
-    assert run_cli(fake, "reset", "-p", project.root, "--db", project.db_path) == 0
+    assert run_cli(fake, "reset", "--project-root", project.root, "--db", project.db_path) == 0
     assert not project.db_path.exists()
     assert not wal.exists()
     assert not shm.exists()
@@ -292,7 +292,7 @@ def test_reset_of_missing_db_succeeds(tmp_path: Path, capsys) -> None:
     project = make_project(tmp_path / "project", files={})
     db_path = tmp_path / "never.db"
     fake = FakeModel([])
-    assert run_cli(fake, "reset", "-p", project.root, "--db", db_path) == 0
+    assert run_cli(fake, "reset", "--project-root", project.root, "--db", db_path) == 0
     assert not db_path.exists()
     assert str(db_path.resolve()) in capsys.readouterr().out
 
@@ -303,7 +303,7 @@ def test_reset_refuses_when_locked(project, capsys) -> None:
     assert project.db_path.exists()
 
     with held_lock(lock_path_for(project.db_path)):
-        assert run_cli(fake, "reset", "-p", project.root, "--db", project.db_path) == 2
+        assert run_cli(fake, "reset", "--project-root", project.root, "--db", project.db_path) == 2
 
     assert project.db_path.exists()
     assert "locked by process 999999" in capsys.readouterr().err
@@ -328,7 +328,7 @@ def test_config_override_selects_alternate_file_set(project, tmp_path: Path) -> 
         run_cli(
             fake,
             "explore",
-            "-p",
+            "--project-root",
             project.root,
             "--db",
             project.db_path,
@@ -447,6 +447,19 @@ def test_issues_list_filters(project, capsys) -> None:
     out = listed("--aspect", "comments", "--aspect", "dead-code")
     assert "A-high" in out and "B-high" in out and "C-medium" in out
     assert "4 open issues" in out
+
+
+def test_issues_bare_command_filters_by_path(project, capsys) -> None:
+    project.write("lib/c.py", "c = 1\n")
+    seed_issue(project, path="src/a.py", description="A-in-src")
+    seed_issue(project, path="lib/c.py", description="C-in-lib")
+    fake = FakeModel([])
+
+    assert run_cli(fake, *issues_args(project, "--path", "src/")) == 0
+    out = capsys.readouterr().out
+    assert "A-in-src" in out
+    assert "C-in-lib" not in out
+    assert "1 open issue" in out
 
 
 def test_issues_list_prunes_stale(project, capsys) -> None:
@@ -634,10 +647,12 @@ def test_issues_commands_without_config(tmp_path: Path, capsys) -> None:
     assert not (root / "khorek.toml").exists()
 
     fake = FakeModel([])
-    assert run_cli(fake, "issues", "list", "-p", root, "--db", db) == 0
+    assert run_cli(fake, "issues", "list", "--project-root", root, "--db", db) == 0
     assert "no config here" in capsys.readouterr().out
 
-    assert run_cli(fake, "issues", "dismiss", str(issue_id), "-p", root, "--db", db) == 0
+    assert (
+        run_cli(fake, "issues", "dismiss", str(issue_id), "--project-root", root, "--db", db) == 0
+    )
     with Database(db, root, readonly=True) as database:
         assert database.list_issues() == []
 
