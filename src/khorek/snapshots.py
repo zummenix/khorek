@@ -29,9 +29,6 @@ class Snapshot:
     original: bytes | None
 
 
-FileChange = Snapshot  # keep the public alias
-
-
 class Snapshotter:
     """Captures and restores originals for a single issue attempt."""
 
@@ -102,4 +99,4 @@ class Snapshotter:
         return snapshot.path.exists() or snapshot.path.is_symlink()
 
 
-__all__ = ["FileChange", "Snapshotter"]
+__all__ = ["Snapshotter"]
