@@ -26,7 +26,7 @@ from khorek.agents.tools import (
     read_file_tool,
     read_only_tools,
 )
-from khorek.content import format_file_lines
+from khorek.content import format_content_lines
 from khorek.llm import Tool, ToolValidationError
 from khorek.snapshots import Snapshotter
 
@@ -521,7 +521,7 @@ def test_read_file_line_window_uses_largest_fitting_count() -> None:
 
     def build(count: int) -> dict[str, Any]:
         end = start + count - 1
-        content = format_file_lines(relative, text, offset=start, limit=count, header=False)
+        content = format_content_lines(text, offset=start, limit=count)
         return _read_file_result(relative, total, start, end, content, end < total)
 
     cap = _size(build(2))

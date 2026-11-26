@@ -29,7 +29,7 @@ from khorek.agents.arguments import (
     optional_string_argument,
     string_argument,
 )
-from khorek.content import format_file_lines
+from khorek.content import format_content_lines
 from khorek.files import PathEscapeError, is_binary, read_text_file, resolve_within_root, walk_files
 from khorek.llm import Tool, ToolValidationError
 
@@ -129,7 +129,7 @@ def _fit_read_file_result(
 
     def build_window(count: int) -> dict[str, Any]:
         end = start + count - 1
-        content = format_file_lines(relative, text, offset=start, limit=count, header=False)
+        content = format_content_lines(text, offset=start, limit=count)
         return _read_file_result(relative, total, start, end, content, end < total)
 
     best_count = count_that_fits(

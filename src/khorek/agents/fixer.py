@@ -22,7 +22,7 @@ from khorek.agents.arguments import string_argument
 from khorek.agents.schema import terminal_tool
 from khorek.agents.tools import fit_result, read_file_tool
 from khorek.config import DefaultsConfig, FixerAgentConfig
-from khorek.content import format_file_lines, line_count
+from khorek.content import format_content_lines, format_file_lines, line_count
 from khorek.db import Issue
 from khorek.files import (
     PathEscapeError,
@@ -234,10 +234,10 @@ def _build_user_prompt(
         issue.description.strip(),
         "",
         f"Issue line range: {start}-{end}; snippet reconstructed from the current file:",
-        format_file_lines(path, content, offset=start, limit=end - start + 1),
+        format_content_lines(content, offset=start, limit=end - start + 1),
         "",
         "Current file contents:",
-        format_file_lines(path, content, offset=None, limit=None),
+        format_file_lines(path, content),
         "",
     ]
     if previous_failure:

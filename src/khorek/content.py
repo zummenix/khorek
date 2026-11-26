@@ -1,13 +1,4 @@
-"""Formatting helpers for presenting file contents to an LLM.
-
-The public helper :func:`format_file_lines` renders a slice of a file's text
-as a numbered excerpt.  With ``header=True`` (the default) it is wrapped in a
-dashed rule and gets a footer when the file is cut short, which is what the
-prompt builders use; with ``header=False`` it renders the numbered lines only,
-leaving the framing to the tool that returns them.  :func:`line_count` and
-:func:`indent_block` provide shared text helpers.  This is the presentation
-layer for excerpts; the file reading itself stays in :mod:`khorek.files`.
-"""
+"""Formatting helpers for presenting file contents to an LLM."""
 
 from __future__ import annotations
 
@@ -26,30 +17,20 @@ def indent_block(text: str, width: int = 4) -> list[str]:
     return lines
 
 
-def format_file_lines(
-    relative_file_path: str,
+def format_content_lines(
     content: str,
     offset: int | None = None,
     limit: int | None = None,
-    *,
-    header: bool = True,
 ) -> str:
-    """Render a slice of *content* as a numbered, prefixed excerpt.
+    """Render a slice of *content* as numbered lines, with no framing.
 
     *offset* is the 1-based first line to show (or ``None`` for the first
     line); *limit* is the maximum number of lines to show (or ``None`` for
     every line from *offset*).  Each line is prefixed with a right-aligned
-    ``N`` padded to the width of the largest line number in the excerpt,
+    ``N`` padded to the width of the largest line number in the window,
     followed by `` | `` so the separator stays on one column.
 
-    With *header* true the excerpt is wrapped in a dashed rule and a footer
-    is appended when the file is cut short (or when *offset* lands past the
-    end of the file).  With *header* false only the numbered lines are
-    returned, with no title or truncation footer: the caller owns the framing
-    (see :func:`khorek.agents.tools.read_file_tool`).
-    *relative_file_path* is reported as given; callers must supply paths
-    relative to the current working directory.  An empty file renders as a
-    single blank line.
+    An empty file renders as a single blank line.
     """
     lines = content.splitlines()
     if not lines:
@@ -67,29 +48,29 @@ def format_file_lines(
         end = total
 
     excerpt = lines[start - 1 : end]
-    shown = len(excerpt)
-    remaining = total - shown
 
     # Pad every number to the width of the last one in the window, so the
     # `` | `` separator lands on the same column on every line.
     numbered = [
         f"{index:>{len(str(end))}} | {line}" for index, line in enumerate(excerpt, start=start)
     ]
-    if not header:
-        return "\n".join(numbered) + "\n"
+    return "\n".join(numbered) + "\n"
 
-    title = f"File: {relative_file_path} (Lines {start}-{end} of {total})"
+
+def format_file_lines(relative_file_path: str, content: str) -> str:
+    """Render the whole of *content* wrapped in a dashed-rule header.
+
+    The header is ``File: <path> (Lines 1-<total> of <total>)`` followed by a
+    dashed rule, then the numbered lines (see :func:`format_content_lines`),
+    then a closing rule.  *relative_file_path* is reported as given; callers
+    must supply paths relative to the current working directory.  An empty
+    file renders as a single blank line.
+    """
+    total = line_count(content)
+    body = format_content_lines(content)
+    title = f"File: {relative_file_path} (Lines 1-{total} of {total})"
     separator = "-" * len(title)
-
-    parts = [title, separator, *numbered, separator]
-
-    if remaining:
-        parts.append(
-            f"[Truncated: {remaining} more line{'s' if remaining != 1 else ''} remaining. "
-            f"Use offset={start + shown} to read further.]"
-        )
-
-    return "\n".join(parts) + "\n"
+    return f"{title}\n{separator}\n{body}{separator}\n"
 
 
-__all__ = ["format_file_lines", "indent_block", "line_count"]
+__all__ = ["format_file_lines", "format_content_lines", "indent_block", "line_count"]
