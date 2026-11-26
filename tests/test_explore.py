@@ -272,7 +272,6 @@ def test_no_tool_call_nudge_then_abort(project, capsys) -> None:
     output = capsys.readouterr().out
     assert "error [no_tool_call]" in output
     assert "second answer" in output
-    # The nudge really was appended to the conversation.
     reminder = fake.chat_requests[1]["messages"][-1]
     assert reminder["role"] == "user"
     assert "REMINDER" in reminder["content"]
@@ -343,7 +342,6 @@ def test_run_explore_aspect_filter_skips_other_aspects(tmp_path: Path) -> None:
 
         assert stats.considered == 1
         assert fake.chat_calls == 1
-        # The second aspect was never enumerated or explored.
         assert [row.aspect_id for row in database.list_state()] == ["comments"]
 
 

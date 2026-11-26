@@ -169,9 +169,7 @@ def test_v1_database_migrates_on_write_open(tmp_path: Path) -> None:
             columns = {row[1] for row in raw.execute("PRAGMA table_info(issues)")}
         assert meta["schema_version"] == SCHEMA_VERSION
         assert "sha256" not in columns
-        # The surviving v1 issue is still there ...
         assert db.get_issue(seeded) is not None
-        # ... and the AUTOINCREMENT sequence continues after it.
         fresh = db.insert_issue(
             aspect_id="comments",
             path="src/a.py",
@@ -198,8 +196,8 @@ def test_v1_database_readonly_open_is_allowed_and_unmigrated(tmp_path: Path) -> 
     with sqlite3.connect(path) as raw:
         meta = dict(raw.execute("SELECT key, value FROM meta").fetchall())
         columns = {row[1] for row in raw.execute("PRAGMA table_info(issues)")}
-    assert meta["schema_version"] == "1"  # unchanged
-    assert "sha256" in columns  # column still present
+    assert meta["schema_version"] == "1"
+    assert "sha256" in columns
 
 
 def test_state_crud(tmp_path: Path) -> None:

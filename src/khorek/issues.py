@@ -40,7 +40,7 @@ class IssueOutcome:
 
     ``found`` is False for an unknown id.  ``action`` is the suffix the
     reporter prints after the ``→``: ``"pair marked clean"``,
-    ``"pair removed (file not found)"``, ``"state cleared"``, or ``""`` (no
+    ``"pair removed (file missing or unreadable)"``, ``"state cleared"``, or ``""`` (no
     suffix, e.g. siblings remain after a dismiss).
     """
 
@@ -137,8 +137,8 @@ def _current_sha(project_root: Path, issue: Issue) -> str | None:
 def dismiss(database: Database, project_root: Path, ids: Sequence[int]) -> list[IssueOutcome]:
     """Dismiss issue ids as not relevant, processing them in order.
 
-    Per id: delete the issue row; if the file no longer exists, also delete
-    the pair's state row; otherwise, when no open issues remain on the
+    Per id: delete the issue row; if the file is missing or unreadable, also
+    delete the pair's state row; otherwise, when no open issues remain on the
     (aspect, path) pair, stamp it clean with the file's *current* sha.  While
     siblings remain the state row is left untouched.
     """
@@ -152,7 +152,7 @@ def dismiss(database: Database, project_root: Path, ids: Sequence[int]) -> list[
         current_sha = _current_sha(project_root, issue)
         if current_sha is None:
             database.delete_state(issue.aspect_id, issue.path)
-            action = "pair removed (file not found)"
+            action = "pair removed (file missing or unreadable)"
         elif not database.open_issues_for(issue.aspect_id, issue.path):
             database.upsert_state(issue.aspect_id, issue.path, current_sha, "clean")
             action = "pair marked clean"

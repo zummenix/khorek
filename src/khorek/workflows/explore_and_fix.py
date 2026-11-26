@@ -21,8 +21,10 @@ The loop, implemented literally:
 attempted = set()
 cycles = 0
 loop:
+  if attempt budget reached: stop
   drain queue (each issue attempted at most once per run)
-  if --limit reached: stop
+  if attempt budget reached: stop
+  if creation budget exhausted: stop
   created = explore(remaining budget)
   if created == 0: stop
   cycles += 1
@@ -32,9 +34,9 @@ loop:
 The budget applies independently to the issues *attempted* and the issues
 *created*: each drain gets the remaining attempt budget and each explore gets
 the remaining creation budget.  Exploration stops once it has created its
-budget; the loop then drains those freshly created issues (their attempts use
-the independent attempt budget) before the next top-of-loop budget check stops
-the run.  Failed issues stay open but are remembered in ``attempted``, so a
+budget; the loop then returns to the top, where the attempt-budget check may
+stop the run before the freshly created issues are drained (their attempts use
+the independent attempt budget).  Failed issues stay open but are remembered in ``attempted``, so a
 second drain can never retry them in the same run; only a successful fix (or a
 fresh issue discovered by the next explore) makes the loop go around again.
 ``max_cycles`` is the no-progress guard against a model that keeps re-reporting
@@ -76,7 +78,6 @@ def run_explore_and_fix(
     stats = CombinedStats(pruned=pruned)
 
     while True:
-        # -- drain the fix queue (each issue at most once per run) ------
         if limit > 0 and attempted >= limit:
             break
         fix_limit = 0 if limit <= 0 else limit - attempted

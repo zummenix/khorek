@@ -498,7 +498,7 @@ def test_issues_list_stale_flag_no_prune(project, capsys) -> None:
     assert "[stale]" in out
     assert "fresh one" in out and "stale one" in out
     assert out.rstrip().endswith("2 open issues (1 stale)")
-    assert project.db_path.read_bytes() == before  # nothing pruned
+    assert project.db_path.read_bytes() == before
     assert {fresh, stale} == {issue.id for issue in _all_ids(project)}
 
 
@@ -519,7 +519,7 @@ def test_issues_list_held_lock_labels_stale(project, capsys) -> None:
         assert "[stale]" in out
         assert "fresh one" in out and "stale one" in out
 
-    assert project.db_path.read_bytes() == before  # still no prune
+    assert project.db_path.read_bytes() == before
 
 
 def test_issues_show_fresh_with_error(project, capsys) -> None:

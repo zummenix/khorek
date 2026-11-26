@@ -10,7 +10,6 @@ import argparse
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Build the top-level argument parser."""
     parser = argparse.ArgumentParser(
         prog="khorek",
         description="Scout a codebase for issues and fix them.",
@@ -119,7 +118,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _add_workflow_arguments(parser: argparse.ArgumentParser) -> None:
-    """Add the arguments shared by all workflow commands."""
+    """Register the arguments shared by the workflow commands."""
     parser.add_argument(
         "--project-root",
         default=".",

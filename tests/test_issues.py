@@ -254,7 +254,7 @@ def test_dismiss_missing_file_removes_state(project, db_path) -> None:
 
     with Database(db_path, root) as db:
         outcomes = dismiss(db, root, [issue])
-    assert outcomes[0].action == "pair removed (file not found)"
+    assert outcomes[0].action == "pair removed (file missing or unreadable)"
     with Database(db_path, root, readonly=True) as db:
         assert db.get_issue(issue) is None
         assert db.get_state("comments", "src/gone.py") is None

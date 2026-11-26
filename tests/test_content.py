@@ -97,7 +97,6 @@ def test_many_digit_line_numbers_widen_the_padding() -> None:
     assert " 992 | 992" in result
     assert " 999 | 999" in result
     assert "1000 | 1000" in result
-    # The " | " separator must land on the same column for every line.
     for line in result.splitlines():
         assert line.index(" | ") == 4
 

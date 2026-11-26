@@ -452,7 +452,7 @@ def test_ask_explorer_handoff_limit_fits_the_cap() -> None:
 
 
 def test_caps_below_the_result_envelope_return_the_minimal_result(tmp_path: Path) -> None:
-    """Documented exception: an envelope smaller than a tiny cap is the floor."""
+    """Documented exception: a cap below the result envelope returns the minimal result."""
     root = _project(tmp_path)
     explorer = cast(ExplorerAgent, _FakeExplorer("an answer"))
 
