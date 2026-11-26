@@ -304,7 +304,7 @@ def explore_args(project: Project, *extra: str | Path) -> tuple[str | Path, ...]
     """Standard ``explore`` arguments for a tmp project."""
     return (
         "explore",
-        "-p",
+        "--project-root",
         project.root,
         "--db",
         project.db_path,
@@ -316,7 +316,7 @@ def fix_args(project: Project, *extra: str | Path) -> tuple[str | Path, ...]:
     """Standard ``fix`` arguments for a tmp project."""
     return (
         "fix",
-        "-p",
+        "--project-root",
         project.root,
         "--db",
         project.db_path,
@@ -328,7 +328,7 @@ def explore_and_fix_args(project: Project, *extra: str | Path) -> tuple[str | Pa
     """Standard ``explore-and-fix`` arguments for a tmp project."""
     return (
         "explore-and-fix",
-        "-p",
+        "--project-root",
         project.root,
         "--db",
         project.db_path,

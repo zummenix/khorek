@@ -148,7 +148,7 @@ def _prepare_run(
     require_verify: bool,
 ) -> RunSetup | int:
     """Resolve and validate workflow inputs, then prepare model tracing."""
-    project_root = _resolve_project(args.path)
+    project_root = _resolve_project(args.project_root)
     if project_root is None:
         return EXIT_FATAL
 
@@ -413,7 +413,7 @@ def _resolve_trace_root(project_root: Path, args: argparse.Namespace) -> Path:
 
 
 def _run_traces(args: argparse.Namespace) -> int:
-    project_root = _resolve_project(args.path)
+    project_root = _resolve_project(args.project_root)
     if project_root is None:
         return EXIT_FATAL
     root = _resolve_trace_root(project_root, args)
@@ -445,7 +445,7 @@ def _run_traces(args: argparse.Namespace) -> int:
 
 
 def _run_reset(args: argparse.Namespace) -> int:
-    project_root = _resolve_project(args.path)
+    project_root = _resolve_project(args.project_root)
     if project_root is None:
         return EXIT_FATAL
 
@@ -474,7 +474,7 @@ def _run_reset(args: argparse.Namespace) -> int:
 
 def _run_init(args: argparse.Namespace, answers: Answers | None = None) -> int:
     """Run the interactive ``khorek init`` wizard and dump a canonical config."""
-    destination = Path(args.path).expanduser().resolve()
+    destination = Path(args.project_root).expanduser().resolve()
     if destination.exists() and not destination.is_dir():
         return _fail(f"not a directory: {destination}")
     if not args.config_name or Path(args.config_name).name != args.config_name:
@@ -657,7 +657,7 @@ def _run_issues(args: argparse.Namespace) -> int:
     an unreadable database.
     """
     subcommand = getattr(args, "issues_command", None) or "list"
-    project_root = _resolve_project(getattr(args, "path", "."))
+    project_root = _resolve_project(getattr(args, "project_root", "."))
     if project_root is None:
         return EXIT_FATAL
     db_path = _resolve_db_path(project_root, getattr(args, "db", None))

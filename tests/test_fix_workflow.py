@@ -1458,7 +1458,10 @@ def test_issues_list_shows_refreshed_lines_after_revalidation(tmp_path: Path, ca
 
     # a fresh, lockless `khorek issues list` reflects the refreshed line span
     assert (
-        run_cli(FakeModel([]), "issues", "list", "-p", project.root, "--db", project.db_path) == 0
+        run_cli(
+            FakeModel([]), "issues", "list", "--project-root", project.root, "--db", project.db_path
+        )
+        == 0
     )
     output = capsys.readouterr().out
     assert "src/a.py:4" in output

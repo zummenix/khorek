@@ -40,7 +40,9 @@ FILES_QUESTION = (
 
 def _run_init(tmp_path: Path, answers: Answers, *extra: str) -> int:
     fake = FakeModel([])
-    return main(["init", "-p", str(tmp_path), *extra], transport=fake.transport, answers=answers)
+    return main(
+        ["init", "--project-root", str(tmp_path), *extra], transport=fake.transport, answers=answers
+    )
 
 
 def test_init_happy_path_writes_canonical_config(tmp_path: Path, capsys) -> None:
@@ -289,8 +291,10 @@ def test_init_config_name_suffix_resolution() -> None:
 def test_init_parser_defaults_and_flags() -> None:
     parser = build_parser()
     args = parser.parse_args(["init"])
-    assert args.path == "."
+    assert args.project_root == "."
     assert args.config_name == "khorek"
-    args = parser.parse_args(["init", "-p", "/tmp/project", "--config-name", "khorek.local"])
-    assert args.path == "/tmp/project"
+    args = parser.parse_args(
+        ["init", "--project-root", "/tmp/project", "--config-name", "khorek.local"]
+    )
+    assert args.project_root == "/tmp/project"
     assert args.config_name == "khorek.local"

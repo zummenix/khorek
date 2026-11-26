@@ -52,8 +52,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Serve a local web UI over the run traces recorded by khorek.",
     )
     traces.add_argument(
-        "-p",
-        "--path",
+        "--project-root",
         default=".",
         help="project root whose traces should be shown (default: current directory)",
     )
@@ -87,8 +86,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Delete the database and its lock file.",
     )
     reset.add_argument(
-        "-p",
-        "--path",
+        "--project-root",
         default=".",
         help="project root whose database should be removed (default: current directory)",
     )
@@ -105,8 +103,7 @@ def build_parser() -> argparse.ArgumentParser:
         "khorek.toml into the destination directory.",
     )
     init.add_argument(
-        "-p",
-        "--path",
+        "--project-root",
         default=".",
         help="destination directory for the dumped config (default: current directory)",
     )
@@ -124,8 +121,7 @@ def build_parser() -> argparse.ArgumentParser:
 def _add_workflow_arguments(parser: argparse.ArgumentParser) -> None:
     """Add the arguments shared by all workflow commands."""
     parser.add_argument(
-        "-p",
-        "--path",
+        "--project-root",
         default=".",
         help="project root to operate on (default: current directory)",
     )
@@ -165,9 +161,7 @@ def _add_workflow_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def _add_issues_root_arguments(
-    parser: argparse.ArgumentParser, *, path_long: bool, suppressed: bool
-) -> None:
+def _add_issues_root_arguments(parser: argparse.ArgumentParser, *, suppressed: bool) -> None:
     """Add the project-root and --db arguments shared by the issues commands.
 
     ``suppressed`` marks a subparser whose values would otherwise clobber
@@ -175,8 +169,7 @@ def _add_issues_root_arguments(
     applies subparser defaults over parent values).
     """
     parser.add_argument(
-        *("-p", "--path") if path_long else ("-p",),
-        dest="path",
+        "--project-root",
         default=argparse.SUPPRESS if suppressed else ".",
         help="project root to operate on (default: current directory)",
     )
@@ -208,6 +201,7 @@ def _add_list_arguments(parser: argparse.ArgumentParser, *, suppressed: bool) ->
         help="only issues with this severity (repeatable, OR between values)",
     )
     parser.add_argument(
+        "-p",
         "--path",
         dest="path_prefixes",
         action="append",
@@ -227,17 +221,16 @@ def _build_issues_parser(subparsers: argparse._SubParsersAction) -> None:
     """Build the ``issues`` subcommand group (list is the default).
 
     The bare ``issues`` parser carries the list filters so ``khorek issues
-    --path src/`` works without the explicit ``list`` subcommand.  On ``list``
-    the long form ``--path`` is the prefix *filter*; the project root is
-    ``-p`` there.  On ``show``/``dismiss``/``delete`` the long form
-    ``--path`` is the project root.
+    --path src/`` works without the explicit ``list`` subcommand.  The project
+    root is ``--project-root`` on every issues command; ``-p``/``--path`` are
+    the path-prefix filter (``list`` and the bare ``issues`` parser).
     """
     issues = subparsers.add_parser(
         "issues",
         help="list, show, dismiss, or delete recorded issues",
         description="Triage the recorded issues of a project (no LLM calls).",
     )
-    _add_issues_root_arguments(issues, path_long=False, suppressed=False)
+    _add_issues_root_arguments(issues, suppressed=False)
     _add_list_arguments(issues, suppressed=False)
 
     issue_sub = issues.add_subparsers(dest="issues_command", metavar="SUBCOMMAND")
@@ -248,7 +241,7 @@ def _build_issues_parser(subparsers: argparse._SubParsersAction) -> None:
         description="List open issues; stale ones are pruned unless the run "
         "lock is held or --stale is given.",
     )
-    _add_issues_root_arguments(list_parser, path_long=False, suppressed=True)
+    _add_issues_root_arguments(list_parser, suppressed=True)
     _add_list_arguments(list_parser, suppressed=True)
 
     show_parser = issue_sub.add_parser(
@@ -256,7 +249,7 @@ def _build_issues_parser(subparsers: argparse._SubParsersAction) -> None:
         help="show one issue in full detail",
         description="Show one issue in full detail (lockless read; never prunes).",
     )
-    _add_issues_root_arguments(show_parser, path_long=True, suppressed=True)
+    _add_issues_root_arguments(show_parser, suppressed=True)
     show_parser.add_argument("id", type=int, metavar="ID", help="issue id to show")
 
     dismiss_parser = issue_sub.add_parser(
@@ -265,7 +258,7 @@ def _build_issues_parser(subparsers: argparse._SubParsersAction) -> None:
         description="Dismiss issue ids as not relevant; a drained pair is "
         "marked clean so the next explore skips it.",
     )
-    _add_issues_root_arguments(dismiss_parser, path_long=True, suppressed=True)
+    _add_issues_root_arguments(dismiss_parser, suppressed=True)
     dismiss_parser.add_argument(
         "ids",
         nargs="+",
@@ -280,7 +273,7 @@ def _build_issues_parser(subparsers: argparse._SubParsersAction) -> None:
         description="Delete issue ids completely so the next explore "
         "re-examines the file from scratch.",
     )
-    _add_issues_root_arguments(delete_parser, path_long=True, suppressed=True)
+    _add_issues_root_arguments(delete_parser, suppressed=True)
     delete_parser.add_argument(
         "ids",
         nargs="+",
