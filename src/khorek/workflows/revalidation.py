@@ -139,11 +139,10 @@ class Revalidator:
                 if description:
                     fields["description"] = description
                 if not fields:
-                    continue  # a valid verdict with nothing to refresh
+                    continue
                 database.update_issue(issue.id, **fields)
                 reporter.fix_revalidated(issue.id, aspect_id, path, start, end)
                 revalidated += 1
-            # uncertain or an unrecognised status: leave the row unchanged.
         return revalidated, resolved
 
 

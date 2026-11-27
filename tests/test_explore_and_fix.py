@@ -85,7 +85,6 @@ def test_queue_is_drained_before_exploring(tmp_path: Path, capsys) -> None:
 
     assert run_cli(fake, *explore_and_fix_args(project)) == 0
 
-    # Fixer first, Aspect agent last: the queue is consumed before exploring.
     assert fake.chat_calls == 4
     assert "edit_file" in tool_names(fake.chat_requests[0])
     assert "report_issues" not in tool_names(fake.chat_requests[0])

@@ -149,7 +149,6 @@ def test_loop_executes_tools_then_returns_terminal_result() -> None:
     assert result.data.value == "done"
     assert fake.chat_calls == 2
     assert "hi" in fake.tool_results()[0]
-    # The required terminal tool is forced via tool_choice.
     assert fake.chat_requests[0]["tool_choice"] == "required"
 
 

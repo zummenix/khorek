@@ -30,7 +30,7 @@ def format_content_lines(
     ``N`` padded to the width of the largest line number in the window,
     followed by `` | `` so the separator stays on one column.
 
-    An empty file renders as a single blank line.
+    An empty file renders as a single numbered line with an empty body.
     """
     lines = content.splitlines()
     if not lines:
@@ -64,7 +64,7 @@ def format_file_lines(relative_file_path: str, content: str) -> str:
     dashed rule, then the numbered lines (see :func:`format_content_lines`),
     then a closing rule.  *relative_file_path* is reported as given; callers
     must supply paths relative to the current working directory.  An empty
-    file renders as a single blank line.
+    file renders as a single numbered line with an empty body.
     """
     total = line_count(content)
     body = format_content_lines(content)

@@ -22,8 +22,6 @@ _VALID_SEVERITIES = frozenset({"low", "medium", "high"})
 
 
 class ReportedIssue(BaseModel):
-    """One issue as reported by the model."""
-
     model_config = ConfigDict(extra="forbid")
 
     description: str = Field(description="What is wrong, concretely.")
@@ -93,7 +91,6 @@ class RevalidationReport(BaseModel):
 
 
 def report_issues_tool() -> Tool:
-    """Create the terminal ``report_issues`` tool definition."""
     return terminal_tool(
         "report_issues",
         (
@@ -106,7 +103,6 @@ def report_issues_tool() -> Tool:
 
 
 def report_revalidation_tool() -> Tool:
-    """Create the terminal ``report_revalidation`` tool definition."""
     return terminal_tool(
         "report_revalidation",
         (
