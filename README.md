@@ -74,8 +74,8 @@ See `khorek --help` for more commands
 
 ## Configuration
 
-Aspects, agents, limits and verifier commands. Take a look at
-[`khorek.toml`](khorek.toml).
+Aspects, agents, limits and verifier commands. See [docs/config.md](docs/config.md)
+for every option, or take a look at [`khorek.toml`](khorek.toml).
 
 ## Traces
 
